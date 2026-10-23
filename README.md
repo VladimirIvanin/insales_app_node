@@ -240,7 +240,7 @@ GitHub Actions выполняет четыре обязательные пров
 | Windows                 | `npm ci`, сборка, `keygen`                                                                       |
 | npm audit               | падает на уязвимостях high и critical                                                            |
 
-`npm audit fix --force` не используется. Известная уязвимость high/critical чинится отдельным обновлением зависимости. Moderate и low смотрите в еженедельных группах Dependabot: runtime и development отдельно, Actions — своей группой. Если обновление меняет требование к Node.js, вместе с ним меняются `engines` и этот README.
+`npm audit fix --force` не используется. Известная уязвимость high/critical чинится отдельным обновлением зависимости. Moderate и low смотрите в еженедельных группах Dependabot: runtime и development отдельно, Actions — своей группой. `typescript` Dependabot не обновляет: `typescript-eslint` принимает только версии ниже 6.1, а TypeScript 7 — другой компилятор. Если обновление меняет требование к Node.js, вместе с ним меняются `engines` и этот README.
 
 ## Ограничения
 
