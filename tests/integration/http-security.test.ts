@@ -163,7 +163,7 @@ describe('TRUST_PROXY and rate limit', () => {
     for (const address of forwarded) {
       const response = await fastify.inject({
         method: 'GET',
-        url: '/health',
+        url: '/',
         headers: { 'x-forwarded-for': address },
       });
       codes.push(response.statusCode);
@@ -176,9 +176,9 @@ describe('TRUST_PROXY and rate limit', () => {
 
   it('counts trusted forwarded clients separately and ignores an untrusted proxy', async () => {
     expect(await statuses(['127.0.0.1'], ['203.0.113.10', '203.0.113.11', '203.0.113.10'])).toEqual(
-      [200, 200, 429],
+      [401, 401, 429],
     );
-    expect(await statuses(['10.0.0.1'], ['203.0.113.20', '203.0.113.21'])).toEqual([200, 429]);
+    expect(await statuses(['10.0.0.1'], ['203.0.113.20', '203.0.113.21'])).toEqual([401, 429]);
   });
 });
 

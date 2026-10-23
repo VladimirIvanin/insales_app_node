@@ -54,7 +54,7 @@ The default rate limit is 100 requests per minute per client IP. Behind a proxy,
 
 ## API client
 
-`ApiError` is an HTTP status the operation does not treat as success. `TransportError` is DNS, connection, timeout or a path rejected before the request. `ResponseError` is JSON or a required field that does not match the operation. Messages do not include the response body, the Basic secret or the store password. Status, `API-Usage-Limit` and `Retry-After` stay on `ApiError`.
+`ApiError` is an HTTP status the operation does not treat as success. `TransportError` is DNS, connection, timeout or a path rejected before the request. `ResponseError` is JSON or a required field that does not match the operation. Messages do not include the response body, the Basic secret or the store password. Status, `API-Usage-Limit` and `Retry-After` stay on `ApiError`. Its diagnostic `body` is limited to 64 KiB; `data` contains parsed JSON when available. Both are private-backed getters and are omitted from default serialization.
 
 Production calls use HTTPS and verify the certificate. `LOCAL_DEMO=true` allows HTTP only to a loopback address, and only when `APP_ENV` is not `production`. Redirects are not followed. There is no automatic retry. A timed-out PUT or POST has an unknown result.
 

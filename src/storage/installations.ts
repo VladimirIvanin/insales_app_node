@@ -1,4 +1,5 @@
 import { getDb } from './database.js';
+import { ProtocolError } from '../insales/errors.js';
 import { encrypt, decrypt, randomId } from './credentials.js';
 import { timingSafeEqual } from 'node:crypto';
 import type { AppConfig } from '../config.js';
@@ -29,7 +30,7 @@ export type CreateCandidateResult =
   | { status: 'duplicate'; id: string }
   | { status: 'already_active' };
 
-export class PendingQuotaError extends Error {
+export class PendingQuotaError extends ProtocolError {
   constructor(shop: string) {
     super(`Max pending candidates (${MAX_PENDING_PER_DOMAIN}) reached for domain: ${shop}`);
     this.name = 'PendingQuotaError';
@@ -185,9 +186,15 @@ export function activateCandidate(config: AppConfig, candidateId: string): numbe
       config.appEncryptionKey,
       aadFor(candidate.shop, candidate.store_id, 'candidate'),
     );
-    const shopOwner = db.prepare('SELECT id FROM stores WHERE shop = ?').get(candidate.shop) as
-      { id: string } | undefined;
-    if (shopOwner && shopOwner.id !== candidate.store_id) return null;
+    const shopOwner = db
+      .prepare('SELECT id, generation FROM stores WHERE shop = ?')
+      .get(candidate.shop) as { id: string; generation: number } | undefined;
+    if (
+      shopOwner &&
+      shopOwner.id !== candidate.store_id &&
+      shopOwner.generation >= candidate.ordinal
+    )
+      return null;
 
     const existing = db.prepare('SELECT * FROM stores WHERE id = ?').get(candidate.store_id) as
       StoreRow | undefined;
@@ -204,6 +211,11 @@ export function activateCandidate(config: AppConfig, candidateId: string): numbe
       if (candidate.ordinal <= existing.generation) return null;
     }
 
+    if (shopOwner && shopOwner.id !== candidate.store_id) {
+      db.prepare('DELETE FROM sessions WHERE store_id = ?').run(shopOwner.id);
+      db.prepare('DELETE FROM login_challenges WHERE store_id = ?').run(shopOwner.id);
+      db.prepare('DELETE FROM stores WHERE id = ?').run(shopOwner.id);
+    }
     const generation = candidate.ordinal;
     const encrypted = encrypt(
       password,
@@ -335,4 +347,10 @@ export function updateStoreTitle(storeId: string, title: string, generation: num
     )
     .run(title, storeId, generation);
   return result.changes === 1;
+}
+
+export function pendingCandidates(shop: string): CandidateRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM install_candidates WHERE shop = ? AND ${NOT_EXPIRED} ORDER BY ordinal`)
+    .all(shop) as CandidateRow[];
 }

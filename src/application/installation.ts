@@ -2,6 +2,7 @@ import { AppConfig } from '../config.js';
 import { createClient } from '../insales/client.js';
 import { ApiError, ProtocolError } from '../insales/errors.js';
 import { installPassword, normalizeShop } from '../insales/protocol.js';
+import { claimVerification, releaseVerification, retryDelay } from './verification-budget.js';
 import type { TransportOptions } from '../insales/transport.js';
 import { lifecycleHooks } from './hooks.js';
 import {
@@ -10,7 +11,8 @@ import {
   decryptCandidatePassword,
   findCandidate,
   getStore,
-  getStoreByShop,
+  pendingCandidates,
+  type CandidateRow,
   rejectCandidate,
   uninstallStore,
   updateStoreTitle,
@@ -38,13 +40,68 @@ export function handleInstall(
   }
 
   const password = installPassword(token, config.insalesAppSecret);
+  createCandidate(config, insalesId, normalizedShop, password);
+}
+
+export async function receiveInstallation(
+  config: AppConfig,
+  shop: string,
+  storeId: string,
+  token: string,
+): Promise<void> {
   try {
-    createCandidate(config, insalesId, normalizedShop, password);
-  } catch (err: unknown) {
-    if (err instanceof PendingQuotaError) {
-      throw new ProtocolError('Too many pending installations for this shop');
+    handleInstall(config, shop, storeId, token);
+    return;
+  } catch (err) {
+    if (!(err instanceof PendingQuotaError)) throw err;
+  }
+  const normalizedShop = normalizeShop(shop);
+  const deadline = Date.now() + 2000;
+  for (const candidate of pendingCandidates(normalizedShop)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const result = await inspectCandidate(config, candidate, {
+      appId: config.insalesAppId,
+      allowHttp: config.localDemo,
+      timeout: remaining,
+    });
+    if (result.status === 'invalid') {
+      rejectCandidate(candidate.id);
+      handleInstall(config, shop, storeId, token);
+      return;
     }
-    throw err;
+    if (result.status === 'unavailable') break;
+  }
+  throw new PendingQuotaError(normalizedShop);
+}
+
+type Inspection =
+  { status: 'valid'; title: string } | { status: 'invalid' } | { status: 'unavailable' };
+
+async function inspectCandidate(
+  config: AppConfig,
+  candidate: CandidateRow,
+  options: Omit<TransportOptions, 'shop' | 'password'>,
+): Promise<Inspection> {
+  const permit = claimVerification(candidate.shop);
+  if (!permit) return { status: 'unavailable' };
+  let delay = 0;
+  try {
+    const client = createClient({
+      ...options,
+      shop: candidate.shop,
+      password: decryptCandidatePassword(config, candidate),
+    });
+    const { account } = await client.account.get();
+    return account.id === candidate.store_id
+      ? { status: 'valid', title: account.title }
+      : { status: 'invalid' };
+  } catch (err) {
+    if (isCredentialRejection(err)) return { status: 'invalid' };
+    delay = err instanceof ApiError ? retryDelay(err.retryAfter) : 5;
+    return { status: 'unavailable' };
+  } finally {
+    releaseVerification(candidate.shop, permit, delay);
   }
 }
 
@@ -69,49 +126,23 @@ export async function verifyCandidate(
     return { generation: null, diagnostic: 'no_candidate_no_active' };
   }
 
-  const password = decryptCandidatePassword(config, candidate);
-  const client = createClient({
-    appId: transportOpts.appId,
-    shop: normalizedShop,
-    password,
-    allowHttp: transportOpts.allowHttp,
-    timeout: transportOpts.timeout,
-    maxResponseSize: transportOpts.maxResponseSize,
-    lookup: transportOpts.lookup,
-  });
-
-  try {
-    const { account } = await client.account.get();
-    if (account.id !== storeId) {
-      rejectCandidate(candidate.id);
-      return { generation: null, diagnostic: 'identity_mismatch' };
-    }
-
-    if (lifecycleHooks.afterAccountRead) await lifecycleHooks.afterAccountRead();
-
-    const generation = activateCandidate(config, candidate.id);
-    if (lifecycleHooks.afterActivate) await lifecycleHooks.afterActivate();
-    if (generation !== null) {
-      updateStoreTitle(storeId, account.title, generation);
-      return { generation, diagnostic: 'activated' };
-    }
-    const owner = getStoreByShop(normalizedShop);
-    if (owner && owner.id !== storeId) {
-      rejectCandidate(candidate.id);
-      return { generation: null, diagnostic: 'shop_taken' };
-    }
-    const current = getStore(storeId);
-    if (current && current.generation > candidate.ordinal) {
-      return { generation: null, diagnostic: 'stale_candidate' };
-    }
-    return { generation: null, diagnostic: 'activation_failed' };
-  } catch (err: unknown) {
-    if (isCredentialRejection(err)) {
-      rejectCandidate(candidate.id);
-      return { generation: null, diagnostic: 'api_rejected' };
-    }
-    return { generation: null, diagnostic: 'transient_error' };
+  const result = await inspectCandidate(config, candidate, transportOpts);
+  if (result.status === 'invalid') {
+    rejectCandidate(candidate.id);
+    return { generation: null, diagnostic: 'api_rejected' };
   }
+  if (result.status === 'unavailable') return { generation: null, diagnostic: 'transient_error' };
+  if (lifecycleHooks.afterAccountRead) await lifecycleHooks.afterAccountRead();
+  const generation = activateCandidate(config, candidate.id);
+  if (lifecycleHooks.afterActivate) await lifecycleHooks.afterActivate();
+  if (generation !== null) {
+    updateStoreTitle(storeId, result.title, generation);
+    return { generation, diagnostic: 'activated' };
+  }
+  const current = getStore(storeId);
+  if (current && current.generation > candidate.ordinal)
+    return { generation: null, diagnostic: 'stale_candidate' };
+  return { generation: null, diagnostic: 'activation_failed' };
 }
 
 function isCredentialRejection(err: unknown): boolean {

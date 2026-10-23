@@ -136,7 +136,7 @@ export interface Token3Input {
 export async function completeAutologin(
   config: AppConfig,
   input: Token3Input,
-): Promise<{ ok: true; sessionId: string } | { ok: false }> {
+): Promise<{ ok: true; sessionId: string; storeId: string } | { ok: false }> {
   const challenge = findChallengeByBinding(input.browserBinding);
   if (!challenge) return { ok: false };
 
@@ -167,7 +167,7 @@ export async function completeAutologin(
 
   const opened = consumeChallengeAndCreateSession(challenge.id, input.browserBinding, input.userId);
   if (!opened) return { ok: false };
-  return { ok: true, sessionId: opened.sessionId };
+  return { ok: true, sessionId: opened.sessionId, storeId: opened.storeId };
 }
 
 export function sessionCookie(value: string, secure: boolean, maxAge: number): string {

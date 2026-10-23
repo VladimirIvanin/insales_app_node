@@ -18,8 +18,8 @@
       <p>Установка подтверждена. Вход подтверждён подписью token3.</p>
     </div>
     <nav class="actions">
-      <a href="/probe" class="btn">Проверить API магазина</a>
-      <form action="/logout" method="post" class="inline">
+      <a href="/probe?store_id=<%= encodeURIComponent(storeId) %>" class="btn">Проверить API магазина</a>
+      <form action="/logout?store_id=<%= encodeURIComponent(storeId) %>" method="post" class="inline">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>">
         <button type="submit" class="btn btn--outline">Выйти</button>
       </form>

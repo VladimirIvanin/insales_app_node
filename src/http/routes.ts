@@ -2,11 +2,15 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { loadConfig } from '../config.js';
 import { isReady } from '../storage/database.js';
 import { authorize, clientForContext, completeAutologin, sessionCookie } from './auth.js';
-import { handleInstall, handleUninstall, verifyCandidate } from '../application/installation.js';
+import {
+  receiveInstallation,
+  handleUninstall,
+  verifyCandidate,
+} from '../application/installation.js';
 import { lifecycleHooks } from '../application/hooks.js';
 import { normalizeShop } from '../insales/protocol.js';
 import { ApiError, InsalesError, ProtocolError } from '../insales/errors.js';
-import { getStore } from '../storage/installations.js';
+import { PendingQuotaError, getStore } from '../storage/installations.js';
 import { createChallenge, deleteSession } from '../storage/sessions.js';
 import { randomId } from '../storage/credentials.js';
 
@@ -21,16 +25,24 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
   const { config } = deps;
   const secureCookie = config.appBaseUrl.startsWith('https');
 
-  app.get('/health', async (_request: FastifyRequest, reply: FastifyReply) => {
-    return reply.status(200).send({ status: 'ok' });
-  });
+  app.get(
+    '/health',
+    { config: { rateLimit: false } },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      return reply.status(200).send({ status: 'ok' });
+    },
+  );
 
-  app.get('/ready', async (_request: FastifyRequest, reply: FastifyReply) => {
-    if (isReady()) {
-      return reply.status(200).send({ status: 'ready' });
-    }
-    return reply.status(503).send({ status: 'not ready' });
-  });
+  app.get(
+    '/ready',
+    { config: { rateLimit: false } },
+    async (_request: FastifyRequest, reply: FastifyReply) => {
+      if (isReady()) {
+        return reply.status(200).send({ status: 'ready' });
+      }
+      return reply.status(503).send({ status: 'not ready' });
+    },
+  );
 
   app.get('/install', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -43,9 +55,15 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
         return reply.status(400).send({ error: 'Missing required parameters' });
       }
 
-      handleInstall(config, shop, insalesId, token);
+      await receiveInstallation(config, shop, insalesId, token);
       return reply.status(200).send({ status: 'ok' });
     } catch (err: unknown) {
+      if (err instanceof PendingQuotaError) {
+        return reply
+          .status(503)
+          .header('Retry-After', '5')
+          .send({ error: 'Installation verification unavailable; retry later' });
+      }
       if (err instanceof ProtocolError) {
         return reply.status(400).send({ error: 'Invalid request' });
       }
@@ -89,13 +107,16 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
 
       const browserBinding = randomId(16);
       const { nonce } = createChallenge(store.id, store.generation, browserBinding);
-      const callbackUrl = `${config.appBaseUrl}/autologin`;
+      const callbackUrl = `${config.appBaseUrl}/autologin?flow=${encodeURIComponent(nonce)}`;
       const redirectUrl = `${config.localDemo ? 'http' : 'https'}://${store.shop}/admin/applications/${encodeURIComponent(config.insalesAppId)}/login?token=${encodeURIComponent(nonce)}&login=${encodeURIComponent(callbackUrl)}`;
 
       return reply
         .status(302)
         .header('Location', redirectUrl)
-        .header('Set-Cookie', sessionCookie(browserBinding, secureCookie, 300))
+        .header('Set-Cookie', [
+          sessionCookie(browserBinding, secureCookie, 300),
+          flowCookie(nonce, browserBinding, secureCookie, 300),
+        ])
         .send();
     } catch (err: unknown) {
       if (err instanceof ProtocolError) {
@@ -111,7 +132,10 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
       const params = request.query as Record<string, string>;
       const signature = params.token3;
       const userId = params.user_id ?? '';
-      const browserBinding = request.cookies['demo_session'];
+      const flow = params.flow;
+      if (flow && !/^[a-zA-Z0-9_-]{1,128}$/.test(flow))
+        return reply.status(401).send({ error: 'Invalid flow' });
+      const browserBinding = request.cookies[flow ? `login_${flow}` : 'demo_session'];
 
       if (!signature || !userId || !browserBinding) {
         return reply.status(401).send({ error: 'Missing signature' });
@@ -131,8 +155,11 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
 
       return reply
         .status(302)
-        .header('Location', `${config.appBaseUrl}/`)
-        .header('Set-Cookie', sessionCookie(opened.sessionId, secureCookie, 3600))
+        .header('Location', `${config.appBaseUrl}/?store_id=${encodeURIComponent(opened.storeId)}`)
+        .header('Set-Cookie', [
+          sessionCookie(opened.sessionId, secureCookie, 3600),
+          ...(flow ? [flowCookie(flow, '', secureCookie, 0)] : []),
+        ])
         .send();
     } catch (err: unknown) {
       request.log.error({ err }, 'Autologin failed');
@@ -168,11 +195,16 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
       return reply.status(401).view('401');
     }
 
+    if (wrongTab(request, session.storeId))
+      return reply
+        .status(409)
+        .send('Другая вкладка сменила магазин. Откройте приложение из нужного магазина.');
     const csrfToken = await reply.generateCsrf();
     return reply.view('dashboard', {
       title: session.title || session.shop,
       shop: session.shop,
       connected: true,
+      storeId: session.storeId,
       csrfToken,
     });
   });
@@ -183,6 +215,10 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
       return reply.status(401).view('401');
     }
 
+    if (wrongTab(request, session.storeId))
+      return reply
+        .status(409)
+        .send('Другая вкладка сменила магазин. Откройте приложение из нужного магазина.');
     try {
       if (lifecycleHooks.afterAuthorized) await lifecycleHooks.afterAuthorized();
       const client = clientForContext(config, session);
@@ -192,11 +228,13 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
         result: { title: account.title || session.shop, id: account.id, usage },
         shop: session.shop,
         error: null,
+        storeId: session.storeId,
       });
     } catch (err: unknown) {
       if (err instanceof InsalesError) {
         return reply.view('probe', {
           result: null,
+          storeId: session.storeId,
           shop: '',
           error: {
             status: err instanceof ApiError ? err.status : 0,
@@ -213,6 +251,8 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
     { preValidation: app.csrfProtection },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const session = authorize(config, request);
+      if (session && wrongTab(request, session.storeId))
+        return reply.status(409).send('Другая вкладка сменила магазин.');
       if (session) deleteSession(session.sessionId);
       return reply
         .status(303)
@@ -221,4 +261,13 @@ export function registerRoutes(app: FastifyInstance, deps: RouteDependencies): v
         .send();
     },
   );
+}
+
+function flowCookie(flow: string, value: string, secure: boolean, maxAge: number): string {
+  return `login_${flow}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+}
+
+function wrongTab(request: FastifyRequest, storeId: string): boolean {
+  const expected = (request.query as Record<string, string>).store_id;
+  return expected !== undefined && expected !== storeId;
 }

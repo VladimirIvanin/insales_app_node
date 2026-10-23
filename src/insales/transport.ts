@@ -324,7 +324,7 @@ export async function apiRequest<T>(
     const usage = headerString(responseHeaders['api-usage-limit']);
     const retryAfter = headerString(responseHeaders['retry-after']);
     if (!success.includes(statusCode)) {
-      throw new ApiError(statusCode, usage, retryAfter);
+      throw new ApiError(statusCode, usage, retryAfter, undefined, text);
     }
 
     if (text.length === 0 && (call.allowEmpty || statusCode === 204)) {

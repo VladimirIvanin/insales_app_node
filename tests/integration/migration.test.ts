@@ -17,7 +17,7 @@ describe('candidate ordinal migration', () => {
     closeDb();
   });
 
-  it('applies both migrations on an empty database', () => {
+  it('applies all migrations on an empty database', () => {
     const dir = mkdtempSync(join(tmpdir(), 'insales-migrate-fresh-'));
     dirs.push(dir);
     const config = syntheticConfig({ appRuntimeDir: dir, appDb: join(dir, 'app.sqlite3') });
@@ -26,7 +26,7 @@ describe('candidate ordinal migration', () => {
     const versions = getDb()
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as { version: number }[];
-    expect(versions.map((row) => row.version)).toEqual([1, 2]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3]);
     const created = createCandidate(config, '1', 'shop.example', 'password');
     expect(created.status).toBe('created');
     if (created.status === 'created') expect(created.ordinal).toBeGreaterThan(0);

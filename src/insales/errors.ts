@@ -18,16 +18,34 @@ export class InsalesError extends Error {
  * The message does not include the response body.
  */
 export class ApiError extends InsalesError {
+  #body: string;
+  #data: unknown;
   public readonly status: number;
   public readonly usage?: string;
   public readonly retryAfter?: string;
 
-  constructor(status: number, usage?: string, retryAfter?: string, detail?: string) {
+  constructor(status: number, usage?: string, retryAfter?: string, detail?: string, body = '') {
     super('http', detail ?? `InSales API error: ${status}`);
     this.name = 'ApiError';
+    const bytes = Buffer.from(body);
+    this.#body = new TextDecoder().decode(bytes.subarray(0, 65536), {
+      stream: bytes.length > 65536,
+    });
+    try {
+      this.#data = JSON.parse(this.#body);
+    } catch {
+      this.#data = undefined;
+    }
     this.status = status;
     this.usage = usage;
     this.retryAfter = retryAfter;
+  }
+
+  get body(): string {
+    return this.#body;
+  }
+  get data(): unknown {
+    return this.#data;
   }
 }
 

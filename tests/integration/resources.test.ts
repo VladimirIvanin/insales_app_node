@@ -188,6 +188,8 @@ describe('orders and products client', () => {
       expect(apiError.kind).toBe('http');
       expect(apiError.status).toBe(status);
       expect(apiError.usage).toBe('9/500');
+      expect(apiError.body).toBe(personal);
+      expect(apiError.data).toEqual(JSON.parse(personal));
       expect(apiError.retryAfter).toBe(retryAfter);
       expect(apiError.message).not.toContain('hidden-person');
       expect(apiError.message).not.toContain('password-a');

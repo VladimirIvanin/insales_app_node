@@ -21,7 +21,7 @@
 id: <%= result.id %>
 usage: <%= result.usage || 'unknown' %></pre>
     <% } %>
-    <a href="/" class="btn">&larr; Вернуться в приложение</a>
+    <a href="/?store_id=<%= encodeURIComponent(storeId) %>" class="btn">&larr; Вернуться в приложение</a>
   </main>
 </body>
 </html>

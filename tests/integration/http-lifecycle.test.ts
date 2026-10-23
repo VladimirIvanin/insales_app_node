@@ -59,7 +59,7 @@ describe('HTTP lifecycle via buildApp', () => {
   beforeEach(() => {
     const db = getDb();
     db.exec(
-      'DELETE FROM sessions; DELETE FROM login_challenges; DELETE FROM install_candidates; DELETE FROM stores;',
+      'DELETE FROM sessions; DELETE FROM login_challenges; DELETE FROM install_candidates; DELETE FROM stores; DELETE FROM verification_budgets;',
     );
   });
 
@@ -129,6 +129,9 @@ describe('HTTP lifecycle via buildApp', () => {
     expect(failed.headers['cache-control']).toBe('no-store');
     expect(findCandidate(storeId, shop)).not.toBeNull();
 
+    const held = await openLogin(storeId);
+    expect(held.statusCode).toBe(503);
+    getDb().prepare('UPDATE verification_budgets SET next_attempt_at = 0').run();
     const retried = await openLogin(storeId);
     expect(retried.statusCode).toBe(302);
     expect(getStore(storeId)?.shop).toBe(shop);
@@ -148,6 +151,9 @@ describe('HTTP lifecycle via buildApp', () => {
     const failed = await openLogin(storeId);
     expect(failed.statusCode).toBe(503);
     expect(findCandidate(storeId, shop)).not.toBeNull();
+    const held = await openLogin(storeId);
+    expect(held.statusCode).toBe(503);
+    getDb().prepare('UPDATE verification_budgets SET next_attempt_at = 0').run();
     const retried = await openLogin(storeId);
     expect(retried.statusCode).toBe(302);
   });
@@ -322,15 +328,15 @@ describe('HTTP lifecycle via buildApp', () => {
     expect(getSession(sessionB)?.store_id).toBe(storeB);
   });
 
-  it('does not attach a second account id to a shop that already has a store', async () => {
+  it('reassigns a domain only after verifying its new account id', async () => {
     await installAndActivate('1201', 'owner-token');
     sim.setAccount(1202);
     sim.setPassword(installPassword('other-token', appSecret));
     await install('1202', 'other-token');
     const response = await openLogin('1202');
-    expect(response.statusCode).toBe(400);
-    expect(getStore('1201')).not.toBeNull();
-    expect(getStore('1202')).toBeNull();
+    expect(response.statusCode).toBe(302);
+    expect(getStore('1201')).toBeNull();
+    expect(getStore('1202')?.shop).toBe(shop);
     expect(findCandidate('1202', shop)).toBeNull();
   });
 
