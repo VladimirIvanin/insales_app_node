@@ -66,7 +66,9 @@ npm ci
 npm run build
 ```
 
-Дальше можно поставить только production-зависимости. Каталог `dist`, `package.json` и `package-lock.json` достаточны; исходный checkout для запуска не нужен. `node_modules` между разными ОС и архитектурами не переносится: `better-sqlite3` собирается скриптом установки на месте.
+Дальше можно поставить только production-зависимости. Каталог `dist`, `package.json`, `package-lock.json` и `.npmrc` достаточны; исходный checkout для запуска не нужен. Ставьте зависимости на той же ОС и архитектуре, где запускается приложение: нативные модули выбираются под текущую платформу. `better-sqlite3` берёт готовый бинарник из своего каталога `prebuilds`.
+
+`.npmrc` отключает install-скрипты зависимостей. Без него `npm ci` запускает `node-gyp rebuild` для `better-sqlite3`: npm берёт метаданные из lockfile, а там нет `gypfile: false`. Тогда сборке нужны компилятор C++ и Python, а на Windows — ещё и Visual Studio, которую поддерживает `node-gyp`.
 
 ```bash
 npm ci --omit=dev
@@ -235,7 +237,7 @@ GitHub Actions выполняет четыре обязательные пров
 | ----------------------- | ------------------------------------------------------------------------------------------------ |
 | Linux Node 22 и Node 24 | `npm ci`, `npm run check`, `npm run build`                                                       |
 | Production smoke        | копия `dist`, `npm ci --omit=dev`, CLI, `/health`, `/ready`, шаблон и CSS, завершение по SIGTERM |
-| Windows                 | `npm ci`, сборка, `keygen` и тот же production smoke                                             |
+| Windows                 | `npm ci`, сборка, `keygen`                                                                       |
 | npm audit               | падает на уязвимостях high и critical                                                            |
 
 `npm audit fix --force` не используется. Известная уязвимость high/critical чинится отдельным обновлением зависимости. Moderate и low смотрите в еженедельных группах Dependabot: runtime и development отдельно, Actions — своей группой. Если обновление меняет требование к Node.js, вместе с ним меняются `engines` и этот README.

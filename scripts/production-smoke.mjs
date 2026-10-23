@@ -46,6 +46,7 @@ try {
   await cp(join(root, 'dist'), join(stage, 'dist'), { recursive: true });
   await cp(join(root, 'package.json'), join(stage, 'package.json'));
   await cp(join(root, 'package-lock.json'), join(stage, 'package-lock.json'));
+  await cp(join(root, '.npmrc'), join(stage, '.npmrc'));
 
   const installed = await run('npm', ['ci', '--omit=dev'], { cwd: stage });
   assert(installed.code === 0, `npm ci --omit=dev failed\n${installed.stderr}`);
