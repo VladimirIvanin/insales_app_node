@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API probe</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="card">
+    <h1>API probe</h1>
+    <% if (error) { %>
+      <div class="error">
+        <p>API request failed: статус <%= error.status %></p>
+        <% if (error.detail) { %>
+          <p><%= error.detail %></p>
+        <% } %>
+      </div>
+    <% } else { %>
+      <pre class="result">магазин: <%= result.title || shop %>
+id: <%= result.id %>
+usage: <%= result.usage || 'unknown' %></pre>
+    <% } %>
+    <a href="/" class="btn">&larr; Вернуться в приложение</a>
+  </main>
+</body>
+</html>

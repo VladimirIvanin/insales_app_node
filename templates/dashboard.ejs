@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Приложение InSales</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Приложение InSales</h1>
+    <div class="info">
+      <p><strong>Магазин:</strong> <%= title || shop %></p>
+      <p><strong>Домен:</strong> <%= shop %></p>
+      <p class="badge <%= connected ? 'badge--ok' : 'badge--warn' %>">
+        <%= connected ? 'Подключение активно' : 'Подключение требует проверки' %>
+      </p>
+      <p>Установка подтверждена. Вход подтверждён подписью token3.</p>
+    </div>
+    <nav class="actions">
+      <a href="/probe" class="btn">Проверить API магазина</a>
+      <form action="/logout" method="post" class="inline">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <button type="submit" class="btn btn--outline">Выйти</button>
+      </form>
+    </nav>
+    <footer class="footer">
+      <p>InSales Partner Application · Node.js</p>
+    </footer>
+  </main>
+</body>
+</html>

@@ -1,0 +1,93 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  font: 18px/1.5 system-ui, -apple-system, sans-serif;
+  max-width: 720px;
+  margin: 60px auto;
+  padding: 24px;
+  background: #f4f7fb;
+  color: #192a40;
+}
+
+.card {
+  background: white;
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+h1 {
+  margin-top: 0;
+  font-size: 1.6rem;
+  color: #0d2137;
+}
+
+.info p { margin: 0.5rem 0; }
+
+.badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.badge--ok { background: #e3f5e9; color: #1a6d3c; }
+.badge--warn { background: #fff3cd; color: #856404; }
+
+.actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.btn {
+  display: inline-block;
+  padding: 10px 20px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 0.95rem;
+  font-weight: 500;
+  background: #165dcc;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+.btn:hover { background: #134db0; }
+
+.btn--outline {
+  background: transparent;
+  color: #165dcc;
+  border: 2px solid #165dcc;
+}
+.btn--outline:hover { background: #e8f0fe; }
+
+.inline { display: inline; }
+
+.footer {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid #e8ecf0;
+  font-size: 0.8rem;
+  color: #6b7a8e;
+}
+
+.result {
+  background: #f0f0f0;
+  padding: 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.9rem;
+}
+
+.error {
+  background: #fef2f2;
+  color: #991b1b;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+}
+
+a { color: #165dcc; }
+a:hover { text-decoration: underline; }
