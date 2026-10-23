@@ -18,14 +18,14 @@ export interface CandidateRow {
   store_id: string;
   shop: string;
   password: string;
-  generation: number;
+  ordinal: number;
   created_at: string;
   expires_at: string;
   diagnostic: string | null;
 }
 
 export type CreateCandidateResult =
-  | { status: 'created'; id: string }
+  | { status: 'created'; id: string; ordinal: number }
   | { status: 'duplicate'; id: string }
   | { status: 'already_active' };
 
@@ -36,20 +36,12 @@ export class PendingQuotaError extends Error {
   }
 }
 
+/** Runs inside the insert transaction, after the ordinal is reserved and before commit. */
+export const candidateHooks: { afterReserve: (() => void) | null } = { afterReserve: null };
+
 const CANDIDATE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_PENDING_PER_DOMAIN = 5;
 const NOT_EXPIRED = `CAST(expires_at AS INTEGER) > unixepoch()`;
-
-function nextGeneration(): number {
-  const db = getDb();
-  const tx = db.transaction(() => {
-    const row = db.prepare('SELECT counter FROM generation_counter WHERE id = 1').get() as { counter: number } | undefined;
-    const next = (row?.counter ?? 0) + 1;
-    db.prepare('UPDATE generation_counter SET counter = ? WHERE id = 1').run(next);
-    return next;
-  });
-  return tx() as number;
-}
 
 function aadFor(shop: string, storeId: string, purpose: string): string {
   return `${shop}:${storeId}:${purpose}`;
@@ -70,9 +62,26 @@ function candidateExpiry(): string {
 }
 
 /**
+ * Reserve the next candidate ordinal. The caller must already hold the write
+ * transaction that inserts the candidate. The counter is never decreased.
+ */
+function reserveOrdinal(): number {
+  const db = getDb();
+  const row = db.prepare('SELECT counter FROM generation_counter WHERE id = 1').get() as
+    { counter: number } | undefined;
+  const next = (row?.counter ?? 0) + 1;
+  const updated = db.prepare('UPDATE generation_counter SET counter = ? WHERE id = 1').run(next);
+  if (updated.changes !== 1) {
+    throw new Error('Generation counter is missing');
+  }
+  return next;
+}
+
+/**
  * Save an install candidate without replacing another credential.
- * The same password is deduplicated. A repeat of the active password does not
- * create a candidate and does not change the active generation.
+ * The same password is deduplicated and keeps its original ordinal.
+ * A repeat of the active password does not create a candidate and does not
+ * change the active generation or revoke sessions.
  */
 export function createCandidate(
   config: AppConfig,
@@ -86,56 +95,89 @@ export function createCandidate(
   const expiresAt = candidateExpiry();
 
   const tx = db.transaction((): CreateCandidateResult => {
-    db.prepare(`DELETE FROM install_candidates WHERE CAST(expires_at AS INTEGER) <= unixepoch()`).run();
+    db.prepare(
+      `DELETE FROM install_candidates WHERE CAST(expires_at AS INTEGER) <= unixepoch()`,
+    ).run();
 
-    const active = db.prepare('SELECT * FROM stores WHERE id = ? AND shop = ?').get(storeId, shop) as StoreRow | undefined;
+    const active = db
+      .prepare('SELECT * FROM stores WHERE id = ? AND shop = ?')
+      .get(storeId, shop) as StoreRow | undefined;
     if (active) {
-      const activePassword = decrypt({ data: active.password }, config.appEncryptionKey, aadFor(active.shop, active.id, 'store'));
+      const activePassword = decrypt(
+        { data: active.password },
+        config.appEncryptionKey,
+        aadFor(active.shop, active.id, 'store'),
+      );
       if (passwordsEqual(activePassword, password)) return { status: 'already_active' };
     }
 
-    const pending = db.prepare(
-      'SELECT * FROM install_candidates WHERE store_id = ? AND shop = ?',
-    ).all(storeId, shop) as CandidateRow[];
+    const pending = db
+      .prepare('SELECT * FROM install_candidates WHERE store_id = ? AND shop = ?')
+      .all(storeId, shop) as CandidateRow[];
     for (const row of pending) {
-      const existing = decrypt({ data: row.password }, config.appEncryptionKey, aadFor(row.shop, row.store_id, 'candidate'));
+      const existing = decrypt(
+        { data: row.password },
+        config.appEncryptionKey,
+        aadFor(row.shop, row.store_id, 'candidate'),
+      );
       if (passwordsEqual(existing, password)) return { status: 'duplicate', id: row.id };
     }
 
-    const pendingCount = (db.prepare('SELECT COUNT(*) as cnt FROM install_candidates WHERE shop = ?').get(shop) as { cnt: number }).cnt;
+    const pendingCount = (
+      db.prepare('SELECT COUNT(*) as cnt FROM install_candidates WHERE shop = ?').get(shop) as {
+        cnt: number;
+      }
+    ).cnt;
     if (pendingCount >= MAX_PENDING_PER_DOMAIN) throw new PendingQuotaError(shop);
 
-    db.prepare(`
-      INSERT INTO install_candidates (id, store_id, shop, password, generation, expires_at)
-      VALUES (?, ?, ?, ?, 0, ?)
-    `).run(candidateId, storeId, shop, encrypted.data, expiresAt);
-    return { status: 'created', id: candidateId };
+    const ordinal = reserveOrdinal();
+    candidateHooks.afterReserve?.();
+    db.prepare(
+      `
+      INSERT INTO install_candidates (id, store_id, shop, password, ordinal, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    ).run(candidateId, storeId, shop, encrypted.data, ordinal, expiresAt);
+    return { status: 'created', id: candidateId, ordinal };
   });
 
   return tx();
 }
 
+/**
+ * Highest remaining ordinal for the shop. Timestamp is not the order.
+ */
 export function findCandidate(storeId: string, shop: string): CandidateRow | null {
   const db = getDb();
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT * FROM install_candidates
     WHERE store_id = ? AND shop = ? AND ${NOT_EXPIRED}
-    ORDER BY created_at DESC, rowid DESC
+    ORDER BY ordinal DESC, rowid DESC
     LIMIT 1
-  `).get(storeId, shop) as CandidateRow | undefined;
+  `,
+    )
+    .get(storeId, shop) as CandidateRow | undefined;
   return row ?? null;
 }
 
 /**
- * Promote a candidate that is still present. The same password as the active
- * store is an idempotent repeat: generation and sessions stay in place.
+ * Promote a candidate that is still present and newer than the active
+ * generation. The same password as the active store is an idempotent repeat.
+ * An older candidate is left in place so a later retry keeps its ordinal and
+ * cannot replace the newer connection.
  */
 export function activateCandidate(config: AppConfig, candidateId: string): number | null {
   const db = getDb();
   const tx = db.transaction(() => {
-    const candidate = db.prepare(`
+    const candidate = db
+      .prepare(
+        `
       SELECT * FROM install_candidates WHERE id = ? AND ${NOT_EXPIRED}
-    `).get(candidateId) as CandidateRow | undefined;
+    `,
+      )
+      .get(candidateId) as CandidateRow | undefined;
     if (!candidate) return null;
 
     const password = decrypt(
@@ -143,10 +185,12 @@ export function activateCandidate(config: AppConfig, candidateId: string): numbe
       config.appEncryptionKey,
       aadFor(candidate.shop, candidate.store_id, 'candidate'),
     );
-    const shopOwner = db.prepare('SELECT id FROM stores WHERE shop = ?').get(candidate.shop) as { id: string } | undefined;
+    const shopOwner = db.prepare('SELECT id FROM stores WHERE shop = ?').get(candidate.shop) as
+      { id: string } | undefined;
     if (shopOwner && shopOwner.id !== candidate.store_id) return null;
 
-    const existing = db.prepare('SELECT * FROM stores WHERE id = ?').get(candidate.store_id) as StoreRow | undefined;
+    const existing = db.prepare('SELECT * FROM stores WHERE id = ?').get(candidate.store_id) as
+      StoreRow | undefined;
     if (existing) {
       const currentPassword = decrypt(
         { data: existing.password },
@@ -157,22 +201,35 @@ export function activateCandidate(config: AppConfig, candidateId: string): numbe
         db.prepare('DELETE FROM install_candidates WHERE id = ?').run(candidateId);
         return existing.generation;
       }
+      if (candidate.ordinal <= existing.generation) return null;
     }
 
-    const generation = nextGeneration();
-    const encrypted = encrypt(password, config.appEncryptionKey, aadFor(candidate.shop, candidate.store_id, 'store'));
+    const generation = candidate.ordinal;
+    const encrypted = encrypt(
+      password,
+      config.appEncryptionKey,
+      aadFor(candidate.shop, candidate.store_id, 'store'),
+    );
     if (existing) {
-      db.prepare(`
-        UPDATE stores SET shop = ?, password = ?, title = ?, generation = ?, updated_at = datetime('now')
-        WHERE id = ?
-      `).run(candidate.shop, encrypted.data, '', generation, candidate.store_id);
+      db.prepare(
+        `
+        UPDATE stores SET shop = ?, password = ?, title = '', generation = ?, updated_at = datetime('now')
+        WHERE id = ? AND generation = ?
+      `,
+      ).run(candidate.shop, encrypted.data, generation, candidate.store_id, existing.generation);
+      const replaced = db
+        .prepare('SELECT generation FROM stores WHERE id = ?')
+        .get(candidate.store_id) as { generation: number };
+      if (replaced.generation !== generation) return null;
       db.prepare('DELETE FROM sessions WHERE store_id = ?').run(candidate.store_id);
       db.prepare('DELETE FROM login_challenges WHERE store_id = ?').run(candidate.store_id);
     } else {
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO stores (id, shop, password, title, generation)
         VALUES (?, ?, ?, '', ?)
-      `).run(candidate.store_id, candidate.shop, encrypted.data, generation);
+      `,
+      ).run(candidate.store_id, candidate.shop, encrypted.data, generation);
     }
 
     db.prepare('DELETE FROM install_candidates WHERE id = ?').run(candidateId);
@@ -200,11 +257,19 @@ export function getStoreByShop(shop: string): StoreRow | null {
 }
 
 export function decryptStorePassword(config: AppConfig, store: StoreRow): string {
-  return decrypt({ data: store.password }, config.appEncryptionKey, aadFor(store.shop, store.id, 'store'));
+  return decrypt(
+    { data: store.password },
+    config.appEncryptionKey,
+    aadFor(store.shop, store.id, 'store'),
+  );
 }
 
 export function decryptCandidatePassword(config: AppConfig, candidate: CandidateRow): string {
-  return decrypt({ data: candidate.password }, config.appEncryptionKey, aadFor(candidate.shop, candidate.store_id, 'candidate'));
+  return decrypt(
+    { data: candidate.password },
+    config.appEncryptionKey,
+    aadFor(candidate.shop, candidate.store_id, 'candidate'),
+  );
 }
 
 /**
@@ -219,14 +284,20 @@ export function uninstallStore(
 ): boolean {
   const db = getDb();
   const tx = db.transaction(() => {
-    const store = db.prepare('SELECT * FROM stores WHERE id = ? AND shop = ?').get(storeId, shop) as StoreRow | undefined;
-    const candidates = db.prepare(
-      'SELECT * FROM install_candidates WHERE store_id = ? AND shop = ?',
-    ).all(storeId, shop) as CandidateRow[];
+    const store = db
+      .prepare('SELECT * FROM stores WHERE id = ? AND shop = ?')
+      .get(storeId, shop) as StoreRow | undefined;
+    const candidates = db
+      .prepare('SELECT * FROM install_candidates WHERE store_id = ? AND shop = ?')
+      .all(storeId, shop) as CandidateRow[];
 
     let removed = false;
     if (store) {
-      const actualPassword = decrypt({ data: store.password }, config.appEncryptionKey, aadFor(store.shop, store.id, 'store'));
+      const actualPassword = decrypt(
+        { data: store.password },
+        config.appEncryptionKey,
+        aadFor(store.shop, store.id, 'store'),
+      );
       if (passwordsEqual(actualPassword, providedPassword)) {
         db.prepare('DELETE FROM sessions WHERE store_id = ?').run(store.id);
         db.prepare('DELETE FROM login_challenges WHERE store_id = ?').run(store.id);
@@ -252,7 +323,16 @@ export function uninstallStore(
   return tx() as boolean;
 }
 
-export function updateStoreTitle(storeId: string, title: string): void {
+/**
+ * Update the title only when the store is still the generation that was activated.
+ * Returns false when a newer installation already replaced that generation.
+ */
+export function updateStoreTitle(storeId: string, title: string, generation: number): boolean {
   const db = getDb();
-  db.prepare(`UPDATE stores SET title = ?, updated_at = datetime('now') WHERE id = ?`).run(title, storeId);
+  const result = db
+    .prepare(
+      `UPDATE stores SET title = ?, updated_at = datetime('now') WHERE id = ? AND generation = ?`,
+    )
+    .run(title, storeId, generation);
+  return result.changes === 1;
 }

@@ -1,7 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
 import { Agent, buildConnector, request, type Dispatcher } from 'undici';
-import { ApiError } from './errors.js';
+import { ApiError, ResponseError, TransportError } from './errors.js';
 import { normalizeShop } from './protocol.js';
 
 export interface ResolvedAddress {
@@ -23,8 +23,38 @@ export interface TransportOptions {
   lookup?: AddressLookup;
 }
 
+export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+
+export type QueryValue = string | number | boolean;
+
+export type QueryParams = Record<string, QueryValue | QueryValue[] | undefined>;
+
+export interface ApiCall {
+  method: ApiMethod;
+  path: string;
+  query?: QueryParams;
+  body?: unknown;
+  /** Status codes treated as success. Defaults depend on the method. */
+  successStatuses?: readonly number[];
+  /** A successful empty body is returned without JSON parsing. */
+  allowEmpty?: boolean;
+}
+
+export interface ApiResult<T> {
+  data: T;
+  status: number;
+  usage?: string;
+}
+
 const DEFAULT_TIMEOUT = 5_000;
 const DEFAULT_MAX_RESPONSE_SIZE = 2_000_000;
+
+const DEFAULT_SUCCESS: Record<ApiMethod, readonly number[]> = {
+  GET: [200],
+  POST: [200, 201],
+  PUT: [200],
+  DELETE: [200, 204],
+};
 
 const specialAddresses = new BlockList();
 specialAddresses.addSubnet('0.0.0.0', 8, 'ipv4');
@@ -100,13 +130,17 @@ async function systemLookup(hostname: string): Promise<ResolvedAddress[]> {
   return records.map((record) => ({ address: record.address, family: record.family }));
 }
 
-async function selectConnectAddress(hostname: string, allowLoopbackHttp: boolean, lookup: AddressLookup): Promise<string> {
+async function selectConnectAddress(
+  hostname: string,
+  allowLoopbackHttp: boolean,
+  lookup: AddressLookup,
+): Promise<string> {
   const literal = canonicalIp(hostname);
   const records = literal
     ? [{ address: literal.address, family: literal.family === 'ipv4' ? 4 : 6 }]
     : await lookup(hostname);
   if (records.length === 0) {
-    throw new ApiError(0, undefined, undefined, 'Network error: ENOTFOUND');
+    throw new TransportError('Network error: ENOTFOUND');
   }
 
   for (const record of records) {
@@ -114,33 +148,44 @@ async function selectConnectAddress(hostname: string, allowLoopbackHttp: boolean
     if (!parsed || isDisallowedAddress(parsed.address, allowLoopbackHttp)) continue;
     return parsed.address;
   }
-  throw new ApiError(0, undefined, undefined, 'SSRF protection: resolved address is not allowed');
+  throw new TransportError('SSRF protection: resolved address is not allowed');
 }
 
-function secureConnector(allowLoopbackHttp: boolean, lookup: AddressLookup): buildConnector.connector {
+function secureConnector(
+  allowLoopbackHttp: boolean,
+  lookup: AddressLookup,
+): buildConnector.connector {
   const connect = buildConnector({ rejectUnauthorized: true });
   return (options, callback) => {
-    selectConnectAddress(options.hostname, allowLoopbackHttp, lookup).then((address) => {
-      const hostnameIsIp = isIP(options.hostname) !== 0;
-      connect({
-        ...options,
-        hostname: address,
-        host: address,
-        servername: hostnameIsIp ? options.servername : options.hostname,
-      }, callback);
-    }).catch((err: unknown) => {
-      callback(err instanceof Error ? err : new Error(String(err)), null);
-    });
+    selectConnectAddress(options.hostname, allowLoopbackHttp, lookup)
+      .then((address) => {
+        const hostnameIsIp = isIP(options.hostname) !== 0;
+        connect(
+          {
+            ...options,
+            hostname: address,
+            host: address,
+            servername: hostnameIsIp ? options.servername : options.hostname,
+          },
+          callback,
+        );
+      })
+      .catch((err: unknown) => {
+        callback(err instanceof Error ? err : new Error(String(err)), null);
+      });
   };
 }
 
-export async function readCappedBody(body: AsyncIterable<Uint8Array>, maxBytes: number): Promise<Buffer> {
+export async function readCappedBody(
+  body: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let received = 0;
   for await (const chunk of body) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     if (received + buf.length > maxBytes) {
-      throw new ApiError(0, undefined, undefined, `API response too large: ${received + buf.length} bytes`);
+      throw new TransportError(`API response too large: ${received + buf.length} bytes`);
     }
     received += buf.length;
     chunks.push(buf);
@@ -157,11 +202,12 @@ function headerString(value: string | string[] | undefined): string | undefined 
   return value;
 }
 
-function asApiError(err: unknown): ApiError | null {
-  if (err instanceof ApiError) return err;
-  if (err instanceof Error && err.cause instanceof Error) return asApiError(err.cause);
+function asKnownError(err: unknown): ApiError | TransportError | ResponseError | null {
+  if (err instanceof ApiError || err instanceof TransportError || err instanceof ResponseError)
+    return err;
+  if (err instanceof Error && err.cause instanceof Error) return asKnownError(err.cause);
   if (err instanceof Error && err.message.includes('SSRF protection')) {
-    return new ApiError(0, undefined, undefined, err.message);
+    return new TransportError(err.message);
   }
   return null;
 }
@@ -169,19 +215,58 @@ function asApiError(err: unknown): ApiError | null {
 function isAbort(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = 'code' in err ? String(err.code) : '';
-  return err.name === 'AbortError'
-    || code === 'UND_ERR_ABORTED'
-    || code === 'UND_ERR_HEADERS_TIMEOUT'
-    || code === 'UND_ERR_BODY_TIMEOUT'
-    || code === 'UND_ERR_CONNECT_TIMEOUT';
+  return (
+    err.name === 'AbortError' ||
+    code === 'UND_ERR_ABORTED' ||
+    code === 'UND_ERR_HEADERS_TIMEOUT' ||
+    code === 'UND_ERR_BODY_TIMEOUT' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT'
+  );
 }
 
 /**
- * Execute an API request to InSales.
+ * Build a relative API path. Absolute URLs, another origin and `..` are rejected.
+ * Query values are encoded with URLSearchParams.
+ */
+export function resolveApiPath(path: string, query?: QueryParams): string {
+  if (
+    !path.startsWith('/') ||
+    path.startsWith('//') ||
+    path.includes('://') ||
+    path.includes('?') ||
+    path.includes('#') ||
+    path.includes('\\') ||
+    path.includes('..') ||
+    /%2e|%2f|%5c/i.test(path) ||
+    /\s/.test(path) ||
+    !/^\/[A-Za-z0-9._~/-]+$/.test(path)
+  ) {
+    throw new TransportError('API path must be a relative path');
+  }
+
+  const params = new URLSearchParams();
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      if (!/^[\w[\].-]+$/.test(key))
+        throw new TransportError('API query parameter name is not allowed');
+      const items = Array.isArray(value) ? value : [value];
+      for (const item of items) params.append(key, String(item));
+    }
+  }
+  const encoded = params.toString();
+  return encoded.length === 0 ? path : `${path}?${encoded}`;
+}
+
+/**
+ * One HTTP call. There is no retry: a write that times out has an unknown result.
  * The total deadline covers headers and the body. The response is counted
  * while it is read and discarded once it exceeds the cap.
  */
-export async function apiGet<T>(options: TransportOptions, path: string): Promise<{ data: T; status: number; usage?: string }> {
+export async function apiRequest<T>(
+  options: TransportOptions,
+  call: ApiCall,
+): Promise<ApiResult<T>> {
   const {
     appId,
     shop,
@@ -192,10 +277,8 @@ export async function apiGet<T>(options: TransportOptions, path: string): Promis
     lookup = systemLookup,
   } = options;
 
-  if (!path.startsWith('/') || path.startsWith('//')) {
-    throw new ApiError(0, undefined, undefined, 'API path must be a relative path');
-  }
-
+  const path = resolveApiPath(call.path, call.query);
+  const success = call.successStatuses ?? DEFAULT_SUCCESS[call.method];
   const normalizedShop = normalizeShop(shop);
   const protocol = allowHttp ? 'http' : 'https';
   const url = `${protocol}://${normalizedShop}${path}`;
@@ -209,62 +292,77 @@ export async function apiGet<T>(options: TransportOptions, path: string): Promis
     bodyTimeout: timeout,
   });
 
+  const headers: Record<string, string> = {
+    Authorization: `Basic ${auth}`,
+    Accept: 'application/json',
+  };
+  let body: string | undefined;
+  if (call.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(call.body);
+  }
+
   try {
     const response = await request(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Basic ${auth}`,
-        Accept: 'application/json',
-      },
+      method: call.method,
+      headers,
+      body,
       signal: controller.signal,
       dispatcher,
     });
 
-    const { statusCode, headers } = response;
+    const { statusCode, headers: responseHeaders } = response;
     let text: string;
     try {
-      const body = await readCappedBody(response.body, maxResponseSize);
-      text = body.toString('utf8');
+      const received = await readCappedBody(response.body, maxResponseSize);
+      text = received.toString('utf8');
     } catch (err) {
       destroyBody(response.body);
       throw err;
     }
 
-    if (statusCode !== 200) {
-      throw new ApiError(
-        statusCode,
-        headerString(headers['api-usage-limit']),
-        headerString(headers['retry-after']),
-      );
+    const usage = headerString(responseHeaders['api-usage-limit']);
+    const retryAfter = headerString(responseHeaders['retry-after']);
+    if (!success.includes(statusCode)) {
+      throw new ApiError(statusCode, usage, retryAfter);
+    }
+
+    if (text.length === 0 && (call.allowEmpty || statusCode === 204)) {
+      return { data: undefined as T, status: statusCode, usage };
     }
 
     let parsed: T;
     try {
       parsed = JSON.parse(text) as T;
     } catch {
-      throw new ApiError(0, undefined, undefined, 'Invalid JSON in API response');
+      throw new ResponseError('Invalid JSON in API response');
     }
 
-    return {
-      data: parsed,
-      status: statusCode,
-      usage: headerString(headers['api-usage-limit']),
-    };
+    return { data: parsed, status: statusCode, usage };
   } catch (err: unknown) {
-    const apiError = asApiError(err);
-    if (apiError) throw apiError;
+    const known = asKnownError(err);
+    if (known) throw known;
     if (isAbort(err) || controller.signal.aborted) {
-      throw new ApiError(0, undefined, undefined, 'API request timed out');
+      throw new TransportError('API request timed out');
     }
     if (err instanceof Error && 'code' in err) {
       const nodeErr = err as NodeJS.ErrnoException;
-      if (nodeErr.code === 'ECONNREFUSED' || nodeErr.code === 'ENOTFOUND' || nodeErr.code === 'ECONNRESET') {
-        throw new ApiError(0, undefined, undefined, `Network error: ${nodeErr.code}`);
+      if (
+        nodeErr.code === 'ECONNREFUSED' ||
+        nodeErr.code === 'ENOTFOUND' ||
+        nodeErr.code === 'ECONNRESET'
+      ) {
+        throw new TransportError(`Network error: ${nodeErr.code}`);
       }
     }
-    throw new ApiError(0, undefined, undefined, `Request failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new TransportError(`Request failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timeoutId);
     await dispatcher.close();
   }
+}
+
+/** GET wrapper kept for existing callers. Success is HTTP 200 with JSON. */
+export async function apiGet<T>(options: TransportOptions, path: string): Promise<ApiResult<T>> {
+  return apiRequest<T>(options, { method: 'GET', path });
 }

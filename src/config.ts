@@ -41,7 +41,10 @@ function readEnvFile(baseDir: string): Record<string, string> {
     const key = trimmed.slice(0, eqIdx).trim();
     let value = trimmed.slice(eqIdx + 1).trim();
     // Remove surrounding quotes if present
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
       value = value.slice(1, -1);
     }
     if (key) vars[key] = value;
@@ -71,13 +74,13 @@ function readOptionalSetting(
 }
 
 export function loadConfig(arg?: string | LoadConfigOptions): AppConfig {
-  const options: LoadConfigOptions = typeof arg === 'string' || arg === undefined
-    ? { baseDir: arg, readEnvFile: true }
-    : arg;
+  const options: LoadConfigOptions =
+    typeof arg === 'string' || arg === undefined ? { baseDir: arg, readEnvFile: true } : arg;
   const dir = options.baseDir ?? process.cwd();
   const source = options.env ?? process.env;
   const envFiles = (options.readEnvFile ?? options.env === undefined) ? readEnvFile(dir) : {};
-  const getEnv = (key: string, defaultValue?: string) => readSetting(key, source, envFiles, defaultValue);
+  const getEnv = (key: string, defaultValue?: string) =>
+    readSetting(key, source, envFiles, defaultValue);
   const getOptionalEnv = (key: string) => readOptionalSetting(key, source, envFiles);
 
   const appEnv = getEnv('APP_ENV', 'development');
@@ -100,8 +103,9 @@ export function loadConfig(arg?: string | LoadConfigOptions): AppConfig {
     }
     appBaseUrl = url.origin;
   } catch (err: unknown) {
-    if (err instanceof Error && (err.message.includes('HTTPS') || err.message.includes('query'))) throw err;
-    throw new Error(`APP_BASE_URL is not a valid URL: ${appBaseUrlRaw}`);
+    if (err instanceof Error && (err.message.includes('HTTPS') || err.message.includes('query')))
+      throw err;
+    throw new Error(`APP_BASE_URL is not a valid URL: ${appBaseUrlRaw}`, { cause: err });
   }
 
   const encKeyHex = getEnv('APP_ENCRYPTION_KEY');
@@ -116,8 +120,8 @@ export function loadConfig(arg?: string | LoadConfigOptions): AppConfig {
   const allowedShopsRaw = getEnv('ALLOWED_SHOPS');
   const allowedShops = allowedShopsRaw
     .split(',')
-    .map(s => s.trim().toLowerCase())
-    .filter(s => s.length > 0);
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
   if (allowedShops.length === 0) {
     throw new Error('ALLOWED_SHOPS must be a non-empty comma-separated list of shop domains');
   }
@@ -172,7 +176,10 @@ function parseTrustProxy(raw: string | undefined): TrustProxy {
     throw new Error('TRUST_PROXY must list proxy addresses or CIDR ranges');
   }
 
-  const parts = value.split(',').map((part) => part.trim()).filter((part) => part.length > 0);
+  const parts = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
   if (parts.length === 0) return false;
   for (const part of parts) {
     if (!isProxyAddress(part)) throw new Error(`TRUST_PROXY has an invalid address: ${part}`);

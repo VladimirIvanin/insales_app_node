@@ -33,16 +33,18 @@ describe('HTTP lifecycle via buildApp', () => {
     await simB.start();
     shop = `127.0.0.1:${sim.port}`;
     shopB = `127.0.0.1:${simB.port}`;
-    const instance = await buildApp(syntheticConfig({
-      insalesAppId: appId,
-      insalesAppSecret: appSecret,
-      allowedShops: [shop, shopB],
-      appRuntimeDir: tmpDir,
-      appDb: dbPath,
-      appBaseUrl: 'http://127.0.0.1:8765',
-      localDemo: true,
-      logLevel: 'silent',
-    }));
+    const instance = await buildApp(
+      syntheticConfig({
+        insalesAppId: appId,
+        insalesAppSecret: appSecret,
+        allowedShops: [shop, shopB],
+        appRuntimeDir: tmpDir,
+        appDb: dbPath,
+        appBaseUrl: 'http://127.0.0.1:8765',
+        localDemo: true,
+        logLevel: 'silent',
+      }),
+    );
     fastify = instance.fastify;
     config = instance.config;
   });
@@ -56,13 +58,17 @@ describe('HTTP lifecycle via buildApp', () => {
 
   beforeEach(() => {
     const db = getDb();
-    db.exec('DELETE FROM sessions; DELETE FROM login_challenges; DELETE FROM install_candidates; DELETE FROM stores;');
+    db.exec(
+      'DELETE FROM sessions; DELETE FROM login_challenges; DELETE FROM install_candidates; DELETE FROM stores;',
+    );
   });
 
   function candidateCount(storeId: string, domain: string): number {
-    return (getDb().prepare(
-      'SELECT COUNT(*) AS cnt FROM install_candidates WHERE store_id = ? AND shop = ?',
-    ).get(storeId, domain) as { cnt: number }).cnt;
+    return (
+      getDb()
+        .prepare('SELECT COUNT(*) AS cnt FROM install_candidates WHERE store_id = ? AND shop = ?')
+        .get(storeId, domain) as { cnt: number }
+    ).cnt;
   }
 
   async function install(storeId: string, token: string, domain = shop): Promise<void> {
@@ -80,7 +86,12 @@ describe('HTTP lifecycle via buildApp', () => {
     });
   }
 
-  async function installAndActivate(storeId: string, token: string, domain = shop, target = sim): Promise<void> {
+  async function installAndActivate(
+    storeId: string,
+    token: string,
+    domain = shop,
+    target = sim,
+  ): Promise<void> {
     target.setPassword(installPassword(token, appSecret));
     target.setAccount(Number(storeId));
     await install(storeId, token, domain);
@@ -184,7 +195,11 @@ describe('HTTP lifecycle via buildApp', () => {
     const storeId = '1006';
     await installAndActivate(storeId, 'signature-token');
     const store = getStore(storeId)!;
-    const before = (getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as { cnt: number }).cnt;
+    const before = (
+      getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as {
+        cnt: number;
+      }
+    ).cnt;
     const browserBinding = randomId(16);
     const { challengeId, nonce } = createChallenge(store.id, store.generation, browserBinding);
     const password = decryptStorePassword(config, store);
@@ -195,8 +210,16 @@ describe('HTTP lifecycle via buildApp', () => {
       headers: { cookie: `demo_session=${browserBinding}` },
     });
     expect(bad.statusCode).toBe(401);
-    expect((getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as { cnt: number }).cnt).toBe(before);
-    expect(getDb().prepare('SELECT id FROM login_challenges WHERE id = ?').get(challengeId)).toBeTruthy();
+    expect(
+      (
+        getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as {
+          cnt: number;
+        }
+      ).cnt,
+    ).toBe(before);
+    expect(
+      getDb().prepare('SELECT id FROM login_challenges WHERE id = ?').get(challengeId),
+    ).toBeTruthy();
 
     const token3 = computeToken3(nonce, user.email, user.name, user.id, user.confirmed, password);
     const good = await fastify.inject({
@@ -206,7 +229,19 @@ describe('HTTP lifecycle via buildApp', () => {
     });
     expect(good.statusCode).toBe(302);
     expect(good.headers['cache-control']).toBe('no-store');
-    expect((getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as { cnt: number }).cnt).toBe(before + 1);
+    const setCookie = good.headers['set-cookie'];
+    const cookie = Array.isArray(setCookie) ? setCookie.join('\n') : String(setCookie ?? '');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('SameSite=Lax');
+    expect(cookie).toContain('Path=/');
+    expect(cookie).not.toContain('Secure');
+    expect(
+      (
+        getDb().prepare('SELECT COUNT(*) AS cnt FROM sessions WHERE store_id = ?').get(storeId) as {
+          cnt: number;
+        }
+      ).cnt,
+    ).toBe(before + 1);
   });
 
   it('serves the dashboard for a session created by this test', async () => {
@@ -312,7 +347,11 @@ describe('Challenge expiration', () => {
   const dbPath = join(tmpDir, 'test.sqlite3');
 
   beforeAll(() => {
-    try { unlinkSync(dbPath); } catch { /* absent */ }
+    try {
+      unlinkSync(dbPath);
+    } catch {
+      /* absent */
+    }
     const config = syntheticConfig({ appRuntimeDir: tmpDir, appDb: dbPath });
     initDb(config);
     applyMigrations(config);
@@ -323,38 +362,56 @@ describe('Challenge expiration', () => {
   });
 
   it('should not consume an expired challenge', async () => {
-    const { consumeChallenge } = await import('../../src/storage/sessions.js');
+    const { consumeChallengeAndCreateSession } = await import('../../src/storage/sessions.js');
     const db = getDb();
     const binding = randomId(16);
     const challengeId = randomId(16);
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO login_challenges (id, store_id, nonce, generation, browser_binding, expires_at)
       VALUES (?, '42', 'test-nonce', 1, ?, datetime('now', '-1 minute'))
-    `).run(challengeId, binding);
-    expect(consumeChallenge(challengeId, binding, 1)).toBeNull();
+    `,
+    ).run(challengeId, binding);
+    expect(consumeChallengeAndCreateSession(challengeId, binding, '7')).toBeNull();
+    const left = db.prepare('SELECT id FROM login_challenges WHERE id = ?').get(challengeId);
+    expect(left).not.toBeUndefined();
   });
 
-  it('should consume a non-expired challenge', async () => {
-    const { consumeChallenge } = await import('../../src/storage/sessions.js');
+  it('should consume a non-expired challenge into one session of the same generation', async () => {
+    const { consumeChallengeAndCreateSession, getSession: readSession } =
+      await import('../../src/storage/sessions.js');
     const db = getDb();
+    db.prepare(
+      `
+      INSERT INTO stores (id, shop, password, title, generation)
+      VALUES ('42', 'shop.example', 'ciphertext', '', 1)
+    `,
+    ).run();
     const binding = randomId(16);
     const challengeId = randomId(16);
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO login_challenges (id, store_id, nonce, generation, browser_binding, expires_at)
       VALUES (?, '42', 'another-nonce', 1, ?, datetime('now', '+1 hour'))
-    `).run(challengeId, binding);
-    const consumed = consumeChallenge(challengeId, binding, 1);
-    expect(consumed?.id).toBe(challengeId);
+    `,
+    ).run(challengeId, binding);
+    const opened = consumeChallengeAndCreateSession(challengeId, binding, '7');
+    expect(opened?.storeId).toBe('42');
+    expect(opened?.generation).toBe(1);
+    expect(readSession(opened!.sessionId)?.user_id).toBe('7');
+    expect(consumeChallengeAndCreateSession(challengeId, binding, '7')).toBeNull();
   });
 
   it('should not consume a session that expired', async () => {
     const { getSession: readSession } = await import('../../src/storage/sessions.js');
     const db = getDb();
     const sessionId = randomId(32);
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO sessions (id, store_id, user_id, generation, expires_at)
       VALUES (?, '42', '7', 1, datetime('now', '-1 minute'))
-    `).run(sessionId);
+    `,
+    ).run(sessionId);
     expect(readSession(sessionId)).toBeNull();
   });
 
@@ -362,10 +419,12 @@ describe('Challenge expiration', () => {
     const { getSession: readSession } = await import('../../src/storage/sessions.js');
     const db = getDb();
     const sessionId = randomId(32);
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO sessions (id, store_id, user_id, generation, expires_at)
       VALUES (?, '42', '7', 1, datetime('now', '+1 hour'))
-    `).run(sessionId);
+    `,
+    ).run(sessionId);
     expect(readSession(sessionId)?.id).toBe(sessionId);
   });
 });

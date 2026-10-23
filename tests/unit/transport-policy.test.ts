@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { describe, it, expect, afterEach } from 'vitest';
 import { apiGet, isDisallowedAddress, readCappedBody } from '../../src/insales/transport.js';
 
@@ -43,10 +43,16 @@ describe('connector policy', () => {
   const servers: Server[] = [];
 
   afterEach(async () => {
-    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    await Promise.all(
+      servers
+        .splice(0)
+        .map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
   });
 
-  async function listen(handler: Parameters<typeof createServer>[0]): Promise<{ server: Server; port: number; connections: () => number }> {
+  async function listen(
+    handler: (request: IncomingMessage, response: ServerResponse) => void,
+  ): Promise<{ server: Server; port: number; connections: () => number }> {
     let connections = 0;
     const server = createServer((request, response) => {
       connections += 1;
@@ -72,25 +78,33 @@ describe('connector policy', () => {
       if (calls === 1) return [{ address: '127.0.0.1', family: 4 }];
       return [{ address: '10.0.0.8', family: 4 }];
     };
-    const first = await apiGet<{ id: number }>({
-      appId: 'demo-app',
-      shop: `rebind.example:${port}`,
-      password: 'pw',
-      allowHttp: true,
-      lookup,
-      timeout: 1000,
-    }, '/admin/account.json');
+    const first = await apiGet<{ id: number }>(
+      {
+        appId: 'demo-app',
+        shop: `rebind.example:${port}`,
+        password: 'pw',
+        allowHttp: true,
+        lookup,
+        timeout: 1000,
+      },
+      '/admin/account.json',
+    );
     expect(first.data.id).toBe(1);
     expect(connections()).toBe(1);
 
-    await expect(apiGet({
-      appId: 'demo-app',
-      shop: `rebind.example:${port}`,
-      password: 'pw',
-      allowHttp: true,
-      lookup,
-      timeout: 1000,
-    }, '/admin/account.json')).rejects.toThrow(/SSRF protection/);
+    await expect(
+      apiGet(
+        {
+          appId: 'demo-app',
+          shop: `rebind.example:${port}`,
+          password: 'pw',
+          allowHttp: true,
+          lookup,
+          timeout: 1000,
+        },
+        '/admin/account.json',
+      ),
+    ).rejects.toThrow(/SSRF protection/);
     expect(connections()).toBe(1);
     expect(seen).toEqual(['rebind.example', 'rebind.example']);
   });
@@ -100,14 +114,19 @@ describe('connector policy', () => {
       response.writeHead(200);
       response.end('ok');
     });
-    await expect(apiGet({
-      appId: 'demo-app',
-      shop: `mapped.example:${port}`,
-      password: 'pw',
-      allowHttp: true,
-      lookup: async () => [{ address: '::ffff:192.168.1.9', family: 6 }],
-      timeout: 1000,
-    }, '/admin/account.json')).rejects.toThrow(/SSRF protection/);
+    await expect(
+      apiGet(
+        {
+          appId: 'demo-app',
+          shop: `mapped.example:${port}`,
+          password: 'pw',
+          allowHttp: true,
+          lookup: async () => [{ address: '::ffff:192.168.1.9', family: 6 }],
+          timeout: 1000,
+        },
+        '/admin/account.json',
+      ),
+    ).rejects.toThrow(/SSRF protection/);
     expect(connections()).toBe(0);
   });
 
@@ -118,13 +137,18 @@ describe('connector policy', () => {
       setTimeout(() => response.end('1}'), 1000);
     });
     const started = Date.now();
-    await expect(apiGet({
-      appId: 'demo-app',
-      shop: `127.0.0.1:${port}`,
-      password: 'pw',
-      allowHttp: true,
-      timeout: 200,
-    }, '/slow')).rejects.toThrow(/timed out/);
+    await expect(
+      apiGet(
+        {
+          appId: 'demo-app',
+          shop: `127.0.0.1:${port}`,
+          password: 'pw',
+          allowHttp: true,
+          timeout: 200,
+        },
+        '/slow',
+      ),
+    ).rejects.toThrow(/timed out/);
     expect(Date.now() - started).toBeLessThan(800);
   });
 
@@ -145,14 +169,19 @@ describe('connector policy', () => {
       write();
     });
     const started = Date.now();
-    await expect(apiGet({
-      appId: 'demo-app',
-      shop: `127.0.0.1:${port}`,
-      password: 'pw',
-      allowHttp: true,
-      timeout: 3000,
-      maxResponseSize: 500,
-    }, '/big')).rejects.toThrow(/too large/);
+    await expect(
+      apiGet(
+        {
+          appId: 'demo-app',
+          shop: `127.0.0.1:${port}`,
+          password: 'pw',
+          allowHttp: true,
+          timeout: 3000,
+          maxResponseSize: 500,
+        },
+        '/big',
+      ),
+    ).rejects.toThrow(/too large/);
     expect(Date.now() - started).toBeLessThan(1500);
     expect(written).toBeLessThan(40_000);
   });

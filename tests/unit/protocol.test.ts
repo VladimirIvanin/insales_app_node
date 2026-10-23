@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { md5, installPassword, computeToken, computeToken2, computeToken3, constantTimeEqual, isValidHexSignature, normalizeShop } from '../../src/insales/protocol.js';
-import vectors from '../fixtures/protocol-vectors.json';
+import {
+  md5,
+  installPassword,
+  computeToken3,
+  constantTimeEqual,
+  isValidHexSignature,
+  normalizeShop,
+} from '../../src/insales/protocol.js';
+import vectors from '../fixtures/protocol-vectors.json' with { type: 'json' };
 
 describe('InSales protocol', () => {
   describe('Cross-language vectors', () => {
@@ -17,12 +24,25 @@ describe('InSales protocol', () => {
     });
 
     it('computes token2 correctly', () => {
-      const token2 = md5(autologin.nonce, autologin.email, autologin.name, autologin.user_id, install.expected_password);
+      const token2 = md5(
+        autologin.nonce,
+        autologin.email,
+        autologin.name,
+        autologin.user_id,
+        install.expected_password,
+      );
       expect(token2).toBe(autologin.expected_token2);
     });
 
     it('computes token3 correctly', () => {
-      const token3 = md5(autologin.nonce, autologin.email, autologin.name, autologin.user_id, autologin.email_confirmed, install.expected_password);
+      const token3 = md5(
+        autologin.nonce,
+        autologin.email,
+        autologin.name,
+        autologin.user_id,
+        autologin.email_confirmed,
+        install.expected_password,
+      );
       expect(token3).toBe(autologin.expected_token3);
     });
 
@@ -32,8 +52,16 @@ describe('InSales protocol', () => {
 
     it('computeToken3 wrapper matches', () => {
       const pw = installPassword(install.token, install.secret);
-      expect(computeToken3(autologin.nonce, autologin.email, autologin.name, autologin.user_id, autologin.email_confirmed, pw))
-        .toBe(autologin.expected_token3);
+      expect(
+        computeToken3(
+          autologin.nonce,
+          autologin.email,
+          autologin.name,
+          autologin.user_id,
+          autologin.email_confirmed,
+          pw,
+        ),
+      ).toBe(autologin.expected_token3);
     });
   });
 
@@ -46,7 +74,14 @@ describe('InSales protocol', () => {
 
     it('handles Russian characters', () => {
       const pw = 'test-password';
-      const token3 = computeToken3('nonce', 'user@example.com', 'Тестовый пользователь', '1', 'false', pw);
+      const token3 = computeToken3(
+        'nonce',
+        'user@example.com',
+        'Тестовый пользователь',
+        '1',
+        'false',
+        pw,
+      );
       expect(token3).toMatch(/^[a-f0-9]{32}$/);
     });
 

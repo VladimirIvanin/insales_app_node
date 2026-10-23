@@ -6,7 +6,12 @@ import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { buildApp, locateAssets } from '../../src/app.js';
 import { closeDb } from '../../src/storage/database.js';
-import { createCandidate, activateCandidate, getStore } from '../../src/storage/installations.js';
+import {
+  createCandidate,
+  activateCandidate,
+  getStore,
+  updateStoreTitle,
+} from '../../src/storage/installations.js';
 import { createSession, getSession } from '../../src/storage/sessions.js';
 import { syntheticConfig } from '../support/config.js';
 import type { FastifyInstance } from 'fastify';
@@ -14,13 +19,19 @@ import type { FastifyInstance } from 'fastify';
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const apps: FastifyInstance[] = [];
 
-async function listenApp(options: Parameters<typeof syntheticConfig>[0] = {}, buildOptions: Parameters<typeof buildApp>[1] = {}) {
+async function listenApp(
+  options: Parameters<typeof syntheticConfig>[0] = {},
+  buildOptions: Parameters<typeof buildApp>[1] = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'insales-security-'));
-  const instance = await buildApp(syntheticConfig({
-    appRuntimeDir: dir,
-    appDb: join(dir, 'app.sqlite3'),
-    ...options,
-  }), buildOptions);
+  const instance = await buildApp(
+    syntheticConfig({
+      appRuntimeDir: dir,
+      appDb: join(dir, 'app.sqlite3'),
+      ...options,
+    }),
+    buildOptions,
+  );
   apps.push(instance.fastify);
   return instance;
 }
@@ -45,6 +56,7 @@ describe('logout CSRF', () => {
     expect(created.status).toBe('created');
     if (created.status !== 'created') return;
     const generation = activateCandidate(config, created.id)!;
+    expect(updateStoreTitle('42', '<b>shop</b>', generation)).toBe(true);
     const sessionId = createSession('42', '7', generation);
     const dashboard = await fastify.inject({
       method: 'GET',
@@ -52,6 +64,8 @@ describe('logout CSRF', () => {
       headers: { cookie: `demo_session=${sessionId}` },
     });
     expect(dashboard.statusCode).toBe(200);
+    expect(dashboard.body).toContain('&lt;b&gt;shop&lt;/b&gt;');
+    expect(dashboard.body).not.toContain('<b>shop</b>');
     const token = dashboard.body.match(/name="_csrf" value="([^"]+)"/)?.[1];
     expect(token).toBeTruthy();
     const csrfCookie = cookiePairs(dashboard.headers['set-cookie']);
@@ -100,7 +114,14 @@ describe('logout CSRF', () => {
 describe('private response headers', () => {
   it('sets no-store on auth pages and callbacks', async () => {
     const { fastify } = await listenApp();
-    const paths = ['/', '/probe', '/login', '/autologin', '/install?shop=shop.example&insales_id=42&token=marker', '/uninstall?shop=shop.example&insales_id=42&token=marker'];
+    const paths = [
+      '/',
+      '/probe',
+      '/login',
+      '/autologin',
+      '/install?shop=shop.example&insales_id=42&token=marker',
+      '/uninstall?shop=shop.example&insales_id=42&token=marker',
+    ];
     for (const path of paths) {
       const response = await fastify.inject({ method: 'GET', url: path });
       expect(response.headers['cache-control'], path).toBe('no-store');
@@ -154,7 +175,9 @@ describe('TRUST_PROXY and rate limit', () => {
   }
 
   it('counts trusted forwarded clients separately and ignores an untrusted proxy', async () => {
-    expect(await statuses(['127.0.0.1'], ['203.0.113.10', '203.0.113.11', '203.0.113.10'])).toEqual([200, 200, 429]);
+    expect(await statuses(['127.0.0.1'], ['203.0.113.10', '203.0.113.11', '203.0.113.10'])).toEqual(
+      [200, 200, 429],
+    );
     expect(await statuses(['10.0.0.1'], ['203.0.113.20', '203.0.113.21'])).toEqual([200, 429]);
   });
 });

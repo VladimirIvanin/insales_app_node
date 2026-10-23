@@ -14,7 +14,9 @@ export function redactUrl(url: string): string {
   }
 }
 
-export function redactHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string | string[] | undefined> {
+export function redactHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
   const result: Record<string, string | string[] | undefined> = {};
   for (const [key, val] of Object.entries(headers)) {
     if (SENSITIVE_HEADERS.includes(key.toLowerCase())) {
@@ -26,7 +28,13 @@ export function redactHeaders(headers: Record<string, string | string[] | undefi
   return result;
 }
 
-export function requestSerializer(req: { method?: string; url?: string; hostname?: string; host?: string; ip?: string }): Record<string, unknown> {
+export function requestSerializer(req: {
+  method?: string;
+  url?: string;
+  hostname?: string;
+  host?: string;
+  ip?: string;
+}): Record<string, unknown> {
   return {
     method: req.method,
     url: redactUrl(typeof req.url === 'string' ? req.url : ''),

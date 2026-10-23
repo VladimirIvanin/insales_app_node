@@ -32,9 +32,7 @@ export function initDb(config: AppConfig): Database.Database {
   const dbDir = dirname(dbPath);
   mkdirSync(dbDir, { recursive: true, mode: 0o700 });
 
-  const db = new Database(dbPath, {
-    /* verbose: console.log */
-  });
+  const db = new Database(dbPath, {/* verbose: console.log */});
 
   // Enable WAL mode for better read concurrency
   db.pragma('journal_mode = WAL');

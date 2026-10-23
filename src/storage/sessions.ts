@@ -18,9 +18,15 @@ export interface SessionRow {
   expires_at: string;
 }
 
+export interface OpenedSession {
+  sessionId: string;
+  storeId: string;
+  generation: number;
+}
+
 /**
  * Create a new login challenge for a store.
- * Returns the challenge ID (used as session cookie) and nonce.
+ * Returns the challenge ID and nonce. The browser binding is stored, not the session.
  */
 export function createChallenge(
   storeId: string,
@@ -31,93 +37,110 @@ export function createChallenge(
   const challengeId = randomId(16);
   const nonce = randomId(32);
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO login_challenges (id, store_id, nonce, generation, browser_binding, expires_at)
     VALUES (?, ?, ?, ?, ?, datetime('now', '+5 minutes'))
-  `).run(challengeId, storeId, nonce, generation, browserBinding);
+  `,
+  ).run(challengeId, storeId, nonce, generation, browserBinding);
 
   return { challengeId, nonce };
 }
 
+export function findChallengeByBinding(browserBinding: string): ChallengeRow | null {
+  const db = getDb();
+  const challenge = db
+    .prepare(
+      `
+    SELECT * FROM login_challenges
+    WHERE browser_binding = ? AND expires_at > datetime('now')
+  `,
+    )
+    .get(browserBinding) as ChallengeRow | undefined;
+  return challenge ?? null;
+}
+
 /**
- * Consume a challenge — verify and delete atomically.
- * Returns the challenge data if valid, or null if consumed/expired.
+ * Consume one live challenge and insert its session in the same write transaction.
+ * The active generation is read again inside the lock. A replaced or removed
+ * connection does not receive a session. A second caller finds no challenge.
  */
-export function consumeChallenge(
+export function consumeChallengeAndCreateSession(
   challengeId: string,
   browserBinding: string,
-  currentGeneration: number,
-): ChallengeRow | null {
+  userId: string,
+): OpenedSession | null {
   const db = getDb();
 
   const tx = db.transaction(() => {
-    const challenge = db.prepare(`
+    const challenge = db
+      .prepare(
+        `
       SELECT * FROM login_challenges
       WHERE id = ? AND expires_at > datetime('now')
-    `).get(challengeId) as ChallengeRow | undefined;
+    `,
+      )
+      .get(challengeId) as ChallengeRow | undefined;
 
-    if (!challenge) return null;
+    if (!challenge || challenge.browser_binding !== browserBinding) return null;
 
-    // Verify browser binding
-    if (challenge.browser_binding !== browserBinding) return null;
-
-    // Verify generation — challenge must match current store generation
-    if (challenge.generation !== currentGeneration) return null;
-
-    // Delete challenge (consume it)
+    const store = db
+      .prepare('SELECT generation FROM stores WHERE id = ?')
+      .get(challenge.store_id) as { generation: number } | undefined;
     db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challengeId);
+    if (!store || store.generation !== challenge.generation) return null;
 
-    return challenge;
+    const sessionId = randomId(32);
+    db.prepare(
+      `
+      INSERT INTO sessions (id, store_id, user_id, generation, expires_at)
+      VALUES (?, ?, ?, ?, datetime('now', '+1 hour'))
+    `,
+    ).run(sessionId, challenge.store_id, userId, challenge.generation);
+
+    return { sessionId, storeId: challenge.store_id, generation: challenge.generation };
   });
 
-  return tx() as ChallengeRow | null;
+  return tx() as OpenedSession | null;
 }
 
-/**
- * Create a new session for a store.
- */
-export function createSession(
-  storeId: string,
-  userId: string,
-  generation: number,
-): string {
+export function createSession(storeId: string, userId: string, generation: number): string {
   const db = getDb();
   const sessionId = randomId(32);
-
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO sessions (id, store_id, user_id, generation, expires_at)
     VALUES (?, ?, ?, ?, datetime('now', '+1 hour'))
-  `).run(sessionId, storeId, userId, generation);
-
+  `,
+  ).run(sessionId, storeId, userId, generation);
   return sessionId;
 }
 
-/**
- * Get a valid session by ID.
- */
 export function getSession(sessionId: string): SessionRow | null {
   const db = getDb();
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT * FROM sessions WHERE id = ? AND expires_at > datetime('now')
-  `).get(sessionId) as SessionRow | undefined;
+  `,
+    )
+    .get(sessionId) as SessionRow | undefined;
   return row ?? null;
 }
 
-/**
- * Delete a session (logout).
- */
 export function deleteSession(sessionId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
 }
 
-/**
- * Clean up expired challenges and sessions.
- */
 export function cleanupExpired(): { challenges: number; sessions: number } {
   const db = getDb();
-  const expiredChallenges = db.prepare('DELETE FROM login_challenges WHERE expires_at <= datetime(\'now\')').run();
-  const expiredSessions = db.prepare('DELETE FROM sessions WHERE expires_at <= datetime(\'now\')').run();
+  const expiredChallenges = db
+    .prepare("DELETE FROM login_challenges WHERE expires_at <= datetime('now')")
+    .run();
+  const expiredSessions = db
+    .prepare("DELETE FROM sessions WHERE expires_at <= datetime('now')")
+    .run();
   return {
     challenges: expiredChallenges.changes,
     sessions: expiredSessions.changes,

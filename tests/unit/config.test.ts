@@ -71,8 +71,14 @@ describe('loadConfig isolation', () => {
       readEnvFile: false,
     });
     expect(addresses.trustProxy).toEqual(['127.0.0.1', '10.0.0.0/8']);
-    expect(() => loadConfig({ env: baseEnv({ TRUST_PROXY: 'true' }), readEnvFile: false })).toThrow(/TRUST_PROXY/);
-    expect(() => loadConfig({ env: baseEnv({ TRUST_PROXY: '1' }), readEnvFile: false })).toThrow(/TRUST_PROXY/);
-    expect(() => loadConfig({ env: baseEnv({ TRUST_PROXY: '0.0.0.0/0' }), readEnvFile: false })).toThrow(/TRUST_PROXY/);
+    expect(() => loadConfig({ env: baseEnv({ TRUST_PROXY: 'true' }), readEnvFile: false })).toThrow(
+      /TRUST_PROXY/,
+    );
+    expect(() => loadConfig({ env: baseEnv({ TRUST_PROXY: '1' }), readEnvFile: false })).toThrow(
+      /TRUST_PROXY/,
+    );
+    expect(() =>
+      loadConfig({ env: baseEnv({ TRUST_PROXY: '0.0.0.0/0' }), readEnvFile: false }),
+    ).toThrow(/TRUST_PROXY/);
   });
 });

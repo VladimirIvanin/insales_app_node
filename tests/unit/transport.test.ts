@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { apiGet } from '../../src/insales/transport.js';
-import { InSalesSimulator, accountResponse, rateLimitResponse, serverErrorResponse } from '../support/insales-simulator.js';
+import {
+  InSalesSimulator,
+  rateLimitResponse,
+  serverErrorResponse,
+} from '../support/insales-simulator.js';
 
 describe('InSales HTTP transport', () => {
   const sim = new InSalesSimulator();
@@ -20,12 +24,15 @@ describe('InSales HTTP transport', () => {
   });
 
   it('performs a successful API GET to account.json', async () => {
-    const result = await apiGet<{ id: number; title: string }>({
-      appId,
-      shop,
-      password,
-      allowHttp: true,
-    }, '/admin/account.json');
+    const result = await apiGet<{ id: number; title: string }>(
+      {
+        appId,
+        shop,
+        password,
+        allowHttp: true,
+      },
+      '/admin/account.json',
+    );
     expect(result.status).toBe(200);
     expect(result.data.id).toBe(42);
     expect(result.data.title).toBe('Test shop');
@@ -34,12 +41,15 @@ describe('InSales HTTP transport', () => {
 
   it('handles 401 Unauthorized', async () => {
     try {
-      await apiGet({
-        appId,
-        shop,
-        password: 'wrong-password',
-        allowHttp: true,
-      }, '/admin/account.json');
+      await apiGet(
+        {
+          appId,
+          shop,
+          password: 'wrong-password',
+          allowHttp: true,
+        },
+        '/admin/account.json',
+      );
       expect.fail('Should have thrown');
     } catch (err: unknown) {
       const apiErr = err as { status: number };
@@ -50,12 +60,15 @@ describe('InSales HTTP transport', () => {
   it('handles 429 rate limit', async () => {
     sim.respondNext('GET', '/admin/account.json', rateLimitResponse('120'));
     try {
-      await apiGet({
-        appId,
-        shop,
-        password,
-        allowHttp: true,
-      }, '/admin/account.json');
+      await apiGet(
+        {
+          appId,
+          shop,
+          password,
+          allowHttp: true,
+        },
+        '/admin/account.json',
+      );
       expect.fail('Should have thrown');
     } catch (err: unknown) {
       const apiErr = err as { status: number; retryAfter?: string };
@@ -67,12 +80,15 @@ describe('InSales HTTP transport', () => {
   it('handles 5xx server errors', async () => {
     sim.respondNext('GET', '/admin/account.json', serverErrorResponse());
     try {
-      await apiGet({
-        appId,
-        shop,
-        password,
-        allowHttp: true,
-      }, '/admin/account.json');
+      await apiGet(
+        {
+          appId,
+          shop,
+          password,
+          allowHttp: true,
+        },
+        '/admin/account.json',
+      );
       expect.fail('Should have thrown');
     } catch (err: unknown) {
       const apiErr = err as { status: number };
@@ -87,12 +103,15 @@ describe('InSales HTTP transport', () => {
       body: 'not json at all',
     });
     try {
-      await apiGet({
-        appId,
-        shop,
-        password,
-        allowHttp: true,
-      }, '/admin/account.json');
+      await apiGet(
+        {
+          appId,
+          shop,
+          password,
+          allowHttp: true,
+        },
+        '/admin/account.json',
+      );
       expect.fail('Should have thrown');
     } catch (err) {
       expect((err as Error).message).toContain('Invalid JSON');
@@ -102,16 +121,19 @@ describe('InSales HTTP transport', () => {
   it('does not follow redirects', async () => {
     sim.respondNext('GET', '/admin/account.json', {
       status: 302,
-      headers: { 'location': 'http://evil.example.com/admin/account.json' },
+      headers: { location: 'http://evil.example.com/admin/account.json' },
       body: '',
     });
     try {
-      await apiGet({
-        appId,
-        shop,
-        password,
-        allowHttp: true,
-      }, '/admin/account.json');
+      await apiGet(
+        {
+          appId,
+          shop,
+          password,
+          allowHttp: true,
+        },
+        '/admin/account.json',
+      );
       expect.fail('Should have thrown');
     } catch (err: unknown) {
       const apiErr = err as { status: number };

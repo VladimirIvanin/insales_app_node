@@ -5,6 +5,13 @@ import { AddressInfo } from 'node:net';
  * A lightweight InSales platform simulator for testing.
  * Supports only the endpoints needed by the application protocol.
  */
+export interface CapturedRequest {
+  method: string;
+  url: string;
+  body: string;
+  authorization?: string;
+}
+
 export class InSalesSimulator {
   private server;
   private _port = 0;
@@ -14,6 +21,7 @@ export class InSalesSimulator {
   private _accountId = 42;
   private _accountTitle = 'Test shop';
   private _nextResponses: Map<string, SimulatedResponse[]> = new Map();
+  private _requests: CapturedRequest[] = [];
 
   constructor() {
     this.server = createServer((req, res) => this.handleRequest(req, res));
@@ -38,6 +46,14 @@ export class InSalesSimulator {
   setAccount(id: number, title = 'Test shop'): void {
     this._accountId = id;
     this._accountTitle = title;
+  }
+
+  recorded(): CapturedRequest[] {
+    return this._requests;
+  }
+
+  clearRecorded(): void {
+    this._requests = [];
   }
 
   /**
@@ -82,6 +98,29 @@ export class InSalesSimulator {
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const method = req.method || 'GET';
     const path = req.url || '/';
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk));
+    });
+    req.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      this._requests.push({
+        method,
+        url: path,
+        body,
+        authorization:
+          typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined,
+      });
+      this.dispatch(method, path, res, req.headers.authorization);
+    });
+  }
+
+  private dispatch(
+    method: string,
+    path: string,
+    res: ServerResponse,
+    authorization: IncomingMessage['headers']['authorization'],
+  ): void {
     const key = `${method}:${path}`;
 
     // Check for queued responses first
@@ -101,8 +140,9 @@ export class InSalesSimulator {
 
     // Dynamic: /admin/account.json — check Basic auth
     if (path === '/admin/account.json' && method === 'GET') {
-      const auth = req.headers['authorization'] || '';
-      const expected = 'Basic ' + Buffer.from(`${this._appId}:${this._password}`).toString('base64');
+      const auth = authorization || '';
+      const expected =
+        'Basic ' + Buffer.from(`${this._appId}:${this._password}`).toString('base64');
       if (auth === expected) {
         this.sendResponse(res, {
           status: 200,
@@ -120,12 +160,20 @@ export class InSalesSimulator {
   }
 
   private sendResponse(res: ServerResponse, response: SimulatedResponse): void {
-    res.writeHead(response.status, response.headers || {});
-    if (response.disconnect) {
-      res.socket?.destroy();
+    const write = () => {
+      if (res.destroyed) return;
+      res.writeHead(response.status, response.headers || {});
+      if (response.disconnect) {
+        res.socket?.destroy();
+        return;
+      }
+      res.end(response.body || '');
+    };
+    if (response.delayMs && response.delayMs > 0) {
+      setTimeout(write, response.delayMs);
       return;
     }
-    res.end(response.body || '');
+    write();
   }
 }
 
@@ -134,6 +182,7 @@ export interface SimulatedResponse {
   headers?: Record<string, string>;
   body?: string;
   disconnect?: boolean;
+  delayMs?: number;
 }
 
 /**

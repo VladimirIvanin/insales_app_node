@@ -1,5 +1,5 @@
 import { FastifyInstance } from 'fastify';
-import { ApiError, ProtocolError, StorageError } from '../insales/errors.js';
+import { ApiError, InsalesError, ProtocolError, StorageError } from '../insales/errors.js';
 
 /**
  * Register a custom error handler for the Fastify instance.
@@ -21,13 +21,18 @@ export function registerErrorHandler(app: FastifyInstance): void {
       });
     }
 
+    if (error instanceof InsalesError) {
+      return reply.status(502).send({ error: 'Upstream API error' });
+    }
+
     if (error instanceof StorageError) {
       return reply.status(503).send({ error: 'Storage unavailable' });
     }
 
-    const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
-      ? (error as { statusCode?: unknown }).statusCode
-      : undefined;
+    const statusCode =
+      typeof error === 'object' && error !== null && 'statusCode' in error
+        ? (error as { statusCode?: unknown }).statusCode
+        : undefined;
     if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
       return reply.status(statusCode).send({
         error: statusCode === 429 ? 'Too many requests' : 'Invalid request',

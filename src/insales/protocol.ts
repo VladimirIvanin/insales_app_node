@@ -7,7 +7,7 @@ import { ProtocolError } from './errors.js';
  * Do NOT use MD5 for new application-level security mechanisms.
  */
 export function md5(...parts: (string | number | boolean)[]): string {
-  const input = parts.map(p => String(p)).join('');
+  const input = parts.map((p) => String(p)).join('');
   return createHash('md5').update(input, 'utf8').digest('hex');
 }
 
@@ -28,7 +28,13 @@ export function computeToken(nonce: string, password: string): string {
 /**
  * Compute token2: MD5(nonce + user_email + user_name + user_id + password)
  */
-export function computeToken2(nonce: string, userEmail: string, userName: string, userId: string, password: string): string {
+export function computeToken2(
+  nonce: string,
+  userEmail: string,
+  userName: string,
+  userId: string,
+  password: string,
+): string {
   return md5(nonce, userEmail, userName, userId, password);
 }
 

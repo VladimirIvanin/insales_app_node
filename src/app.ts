@@ -1,5 +1,5 @@
-import Fastify, { FastifyInstance, FastifyServerOptions } from 'fastify';
-import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
+import Fastify, { FastifyInstance, LogController } from 'fastify';
+import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import view from '@fastify/view';
@@ -13,12 +13,20 @@ import { existsSync } from 'node:fs';
 import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { AppConfig } from './config.js';
-import { initDb, applyMigrations } from './storage/database.js';
+import { initDb, applyMigrations, closeDb } from './storage/database.js';
 import { registerRoutes } from './http/routes.js';
 import { registerErrorHandler } from './http/error-handler.js';
 import { requestSerializer, errorSerializer } from './http/logging.js';
 
-const PRIVATE_PATHS = new Set(['/', '/install', '/login', '/autologin', '/uninstall', '/probe', '/logout']);
+const PRIVATE_PATHS = new Set([
+  '/',
+  '/install',
+  '/login',
+  '/autologin',
+  '/uninstall',
+  '/probe',
+  '/logout',
+]);
 
 export interface AppOptions {
   moduleDir?: string;
@@ -44,7 +52,10 @@ function thisModuleDir(): string {
 export function locateAssets(moduleDir: string): { templatesDir: string; publicDir: string } {
   const layouts = [
     { templatesDir: resolve(moduleDir, 'templates'), publicDir: resolve(moduleDir, 'public') },
-    { templatesDir: resolve(moduleDir, '..', 'templates'), publicDir: resolve(moduleDir, '..', 'public') },
+    {
+      templatesDir: resolve(moduleDir, '..', 'templates'),
+      publicDir: resolve(moduleDir, '..', 'public'),
+    },
   ];
   for (const layout of layouts) {
     if (existsSync(resolve(layout.templatesDir, '401.ejs'))) return layout;
@@ -73,8 +84,8 @@ export async function buildApp(config: AppConfig, options: AppOptions = {}): Pro
     logger,
     trustProxy: config.trustProxy === false ? false : config.trustProxy,
     requestIdHeader: 'x-request-id',
-    requestIdLogLabel: 'req_id',
-  } as FastifyServerOptions).withTypeProvider<TypeBoxTypeProvider>();
+    logController: new LogController({ requestIdLogLabel: 'req_id' }),
+  }).withTypeProvider<TypeBoxTypeProvider>();
 
   await fastify.register(cookie);
   await fastify.register(formbody);
@@ -85,7 +96,13 @@ export async function buildApp(config: AppConfig, options: AppOptions = {}): Pro
     root: templatesDir,
     includeViewExtension: true,
     defaultContext: {
-      escape: (text: string) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;'),
+      escape: (text: string) =>
+        String(text)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#x27;'),
     },
   });
 
@@ -139,16 +156,9 @@ export async function buildApp(config: AppConfig, options: AppOptions = {}): Pro
 
   registerRoutes(fastify, { config });
 
-  const shutdown = async (signal: string) => {
-    fastify.log.info(`Received ${signal}, shutting down gracefully...`);
-    await fastify.close();
-    const { closeDb } = await import('./storage/database.js');
+  fastify.addHook('onClose', async () => {
     closeDb();
-    process.exit(0);
-  };
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  });
 
   return { fastify, config };
 }

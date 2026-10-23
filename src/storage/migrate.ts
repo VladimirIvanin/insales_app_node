@@ -46,11 +46,13 @@ export function migrate(db: Database.Database, _runtimeDir: string): void {
   )`);
 
   const applied = new Set(
-    (db.prepare('SELECT version FROM schema_migrations').all() as MigrationRow[]).map(r => r.version),
+    (db.prepare('SELECT version FROM schema_migrations').all() as MigrationRow[]).map(
+      (r) => r.version,
+    ),
   );
 
   const files = readdirSync(migrationsDir)
-    .filter(f => f.endsWith('.sql'))
+    .filter((f) => f.endsWith('.sql'))
     .sort();
 
   const applyTx = db.transaction((version: number, sql: string) => {
@@ -74,7 +76,9 @@ export function migrate(db: Database.Database, _runtimeDir: string): void {
  * Show migration status.
  */
 export function migrationStatus(db: Database.Database): { version: number; appliedAt: string }[] {
-  return db.prepare('SELECT version, applied_at as appliedAt FROM schema_migrations ORDER BY version').all() as {
+  return db
+    .prepare('SELECT version, applied_at as appliedAt FROM schema_migrations ORDER BY version')
+    .all() as {
     version: number;
     appliedAt: string;
   }[];

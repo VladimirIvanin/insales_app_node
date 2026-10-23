@@ -57,7 +57,7 @@ export function decrypt(blob: EncryptedBlob, key: Buffer, aad: string): string {
   try {
     const decrypted = decipher.update(ciphertext) + decipher.final('utf8');
     return decrypted;
-  } catch (err) {
+  } catch {
     throw new StorageError('Failed to decrypt credential: invalid key or corrupted data');
   }
 }

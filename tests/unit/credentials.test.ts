@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { encrypt, decrypt } from '../../src/storage/credentials.js';
 
 describe('Credential encryption', () => {
-  const key = Buffer.from('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', 'hex');
+  const key = Buffer.from(
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    'hex',
+  );
 
   it('encrypts and decrypts a password', () => {
     const password = 'test-password-123';
@@ -23,7 +26,10 @@ describe('Credential encryption', () => {
   });
 
   it('fails with wrong key', () => {
-    const wrongKey = Buffer.from('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'hex');
+    const wrongKey = Buffer.from(
+      'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+      'hex',
+    );
     const aad = 'shop.example:42:store';
     const encrypted = encrypt('test-password', key, aad);
     expect(() => decrypt(encrypted, wrongKey, aad)).toThrow();

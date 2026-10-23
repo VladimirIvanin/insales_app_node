@@ -37,9 +37,11 @@ describe('Lifecycle storage', () => {
   });
 
   function candidates(storeId: string, shop: string): number {
-    return (getDb().prepare(
-      'SELECT COUNT(*) AS cnt FROM install_candidates WHERE store_id = ? AND shop = ?',
-    ).get(storeId, shop) as { cnt: number }).cnt;
+    return (
+      getDb()
+        .prepare('SELECT COUNT(*) AS cnt FROM install_candidates WHERE store_id = ? AND shop = ?')
+        .get(storeId, shop) as { cnt: number }
+    ).cnt;
   }
 
   it('runs install, activation, session and ready-password uninstall as one scenario', () => {
@@ -66,7 +68,9 @@ describe('Lifecycle storage', () => {
     const again = findCandidate('42', 'shop.example');
     const nextGeneration = activateCandidate(config, again!.id);
     expect(nextGeneration).toBeGreaterThan(generation!);
-    expect(decryptStorePassword(config, getStore('42')!)).toBe(installPassword('second-token', config.insalesAppSecret));
+    expect(decryptStorePassword(config, getStore('42')!)).toBe(
+      installPassword('second-token', config.insalesAppSecret),
+    );
     expect(getSession(sessionId)).toBeNull();
   });
 
@@ -87,17 +91,23 @@ describe('Lifecycle storage', () => {
     expect(created.status).toBe('created');
     if (created.status !== 'created') return;
     const shortened = String(Math.floor(Date.now() / 1000) + 30);
-    getDb().prepare('UPDATE install_candidates SET expires_at = ? WHERE id = ?').run(shortened, created.id);
+    getDb()
+      .prepare('UPDATE install_candidates SET expires_at = ? WHERE id = ?')
+      .run(shortened, created.id);
     const again = createCandidate(config, '52', 'ttl.example', 'password-a');
     expect(again).toEqual({ status: 'duplicate', id: created.id });
-    const row = getDb().prepare('SELECT expires_at FROM install_candidates WHERE id = ?').get(created.id) as { expires_at: string };
+    const row = getDb()
+      .prepare('SELECT expires_at FROM install_candidates WHERE id = ?')
+      .get(created.id) as { expires_at: string };
     expect(row.expires_at).toBe(shortened);
   });
 
   it('rejects a sixth pending credential without deleting the earlier ones', () => {
     const shop = 'quota.example';
     for (let index = 0; index < 5; index += 1) {
-      expect(createCandidate(config, String(600 + index), shop, `password-${index}`).status).toBe('created');
+      expect(createCandidate(config, String(600 + index), shop, `password-${index}`).status).toBe(
+        'created',
+      );
     }
     expect(() => createCandidate(config, '699', shop, 'password-new')).toThrow(PendingQuotaError);
     expect(candidates('600', shop)).toBe(1);
@@ -109,7 +119,9 @@ describe('Lifecycle storage', () => {
     if (created.status !== 'created') return;
     const generation = activateCandidate(config, created.id);
     const sessionId = createSession('70', '1', generation!);
-    expect(createCandidate(config, '70', 'active.example', 'password-a')).toEqual({ status: 'already_active' });
+    expect(createCandidate(config, '70', 'active.example', 'password-a')).toEqual({
+      status: 'already_active',
+    });
     expect(getStore('70')?.generation).toBe(generation);
     expect(getSession(sessionId)).not.toBeNull();
     expect(findCandidate('70', 'active.example')).toBeNull();
@@ -124,27 +136,43 @@ describe('Lifecycle storage', () => {
   });
 
   it('rejects an expired timestamp on the same date, including an ISO value the old string comparison would keep', () => {
-    const clock = getDb().prepare(`SELECT datetime('now', '-1 minute') AS past, datetime('now') AS now`).get() as { past: string; now: string };
+    const clock = getDb()
+      .prepare(`SELECT datetime('now', '-1 minute') AS past, datetime('now') AS now`)
+      .get() as { past: string; now: string };
     const iso = `${clock.past.replace(' ', 'T')}.000Z`;
-    getDb().prepare(`
-      INSERT INTO install_candidates (id, store_id, shop, password, generation, expires_at)
-      VALUES ('iso-expired', '80', 'expiry.example', 'blob', 0, ?)
-    `).run(iso);
-    const legacy = getDb().prepare(
-      `SELECT COUNT(*) AS cnt FROM install_candidates WHERE id = 'iso-expired' AND expires_at > datetime('now')`,
-    ).get() as { cnt: number };
+    getDb()
+      .prepare(
+        `
+      INSERT INTO install_candidates (id, store_id, shop, password, ordinal, expires_at)
+      VALUES ('iso-expired', '80', 'expiry.example', 'blob', 1, ?)
+    `,
+      )
+      .run(iso);
+    const legacy = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS cnt FROM install_candidates WHERE id = 'iso-expired' AND expires_at > datetime('now')`,
+      )
+      .get() as { cnt: number };
     if (clock.past.slice(0, 10) === clock.now.slice(0, 10)) expect(legacy.cnt).toBe(1);
     expect(findCandidate('80', 'expiry.example')).toBeNull();
 
     const now = Math.floor(Date.now() / 1000);
-    getDb().prepare(`
-      INSERT INTO install_candidates (id, store_id, shop, password, generation, expires_at)
-      VALUES ('epoch-expired', '81', 'expiry.example', 'blob', 0, ?)
-    `).run(String(now - 60));
-    getDb().prepare(`
-      INSERT INTO install_candidates (id, store_id, shop, password, generation, expires_at)
-      VALUES ('epoch-open', '81', 'expiry.example', 'blob', 0, ?)
-    `).run(String(now + 120));
+    getDb()
+      .prepare(
+        `
+      INSERT INTO install_candidates (id, store_id, shop, password, ordinal, expires_at)
+      VALUES ('epoch-expired', '81', 'expiry.example', 'blob', 1, ?)
+    `,
+      )
+      .run(String(now - 60));
+    getDb()
+      .prepare(
+        `
+      INSERT INTO install_candidates (id, store_id, shop, password, ordinal, expires_at)
+      VALUES ('epoch-open', '81', 'expiry.example', 'blob', 2, ?)
+    `,
+      )
+      .run(String(now + 120));
     expect(findCandidate('81', 'expiry.example')?.id).toBe('epoch-open');
   });
 
@@ -196,11 +224,17 @@ describe('Lifecycle storage', () => {
     const created = createCandidate(config, '93', shop, 'shared-password');
     expect(created.status).toBe('created');
     if (created.status !== 'created') return;
-    const row = getDb().prepare('SELECT password, expires_at FROM install_candidates WHERE id = ?').get(created.id) as { password: string; expires_at: string };
-    getDb().prepare(`
-      INSERT INTO install_candidates (id, store_id, shop, password, generation, expires_at)
-      VALUES ('copy-93', '93', ?, ?, 0, ?)
-    `).run(shop, row.password, row.expires_at);
+    const row = getDb()
+      .prepare('SELECT password, expires_at FROM install_candidates WHERE id = ?')
+      .get(created.id) as { password: string; expires_at: string };
+    getDb()
+      .prepare(
+        `
+      INSERT INTO install_candidates (id, store_id, shop, password, ordinal, expires_at)
+      VALUES ('copy-93', '93', ?, ?, 80, ?)
+    `,
+      )
+      .run(shop, row.password, row.expires_at);
     expect(uninstallStore(config, '93', shop, 'shared-password')).toBe(true);
     expect(candidates('93', shop)).toBe(0);
 
