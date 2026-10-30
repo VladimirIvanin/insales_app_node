@@ -41,7 +41,7 @@
   },
   "homepage": "https://github.com/VladimirIvanin/insales_app_node#readme",
   "dependencies": {
-    "@fastify/cookie": "^11.1.3",
+    "@fastify/cookie": "^11.1.5",
     "@fastify/csrf-protection": "^8.0.2",
     "@fastify/formbody": "^9.0.1",
     "@fastify/helmet": "^13.2.0",
